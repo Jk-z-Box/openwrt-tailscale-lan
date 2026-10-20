@@ -20,7 +20,8 @@ const fixtures = {
     Self: { HostName: '<img src=x onerror=alert(1)>' },
     Peer: { one: { HostName: 'server', TailscaleIPs: ['100.90.1.2'], Online: true } }
   }), version: '1.80.3', busy: false, last_exit: '0',
-  host_stack: 'ERROR: IPv6 route does not use tailscale0' },
+    host_stack: 'ERROR: IPv6 route does not use tailscale0',
+    passwall2_bypass: 'ACTIVE: Tailscale bypass protection' },
   report: { report: 'Managed interface: tslan' },
   action: { accepted: true }
 };
@@ -57,6 +58,8 @@ function walk(node, result = []) {
   const data = await view.load();
   const rendered = await view.render(data);
   assert.ok(walk(rendered).some(n => n.tag === 'form'));
+  assert.equal(options.bypass_passwall2.default, '0');
+  assert.equal(options.bypass_passwall2.rmempty, false);
   assert.equal(options.hostname.validate(null, 'router-1'), true);
   assert.notEqual(options.hostname.validate(null, '$(id)'), true);
   assert.notEqual(options.hostname.validate(null, '-bad'), true);
@@ -74,6 +77,7 @@ function walk(node, result = []) {
   const statusText = JSON.stringify(view.renderStatus(fixtures.status));
   assert.ok(statusText.includes('fd7a:115c:a1e0::1234'));
   assert.ok(statusText.includes(fixtures.status.host_stack));
+  assert.ok(statusText.includes(fixtures.status.passwall2_bypass));
 
   await view.refresh();
   assert.equal(nodes['tslan-peers'].children.length, 1);

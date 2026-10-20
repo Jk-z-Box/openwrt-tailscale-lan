@@ -115,6 +115,8 @@ class Integration(unittest.TestCase):
         self.success(r.run())
         self.assertEqual(r.config("firewall"), first)
         self.assertTrue((r.root / "etc/tslan/report.txt").exists())
+        self.assertEqual(r.config('tslan')['settings']['bypass_passwall2'], '0')
+        self.assertTrue((r.root / 'etc/init.d/tslan-bypass').exists())
 
     def test_apk_deployment(self):
         r = self.make("apk")

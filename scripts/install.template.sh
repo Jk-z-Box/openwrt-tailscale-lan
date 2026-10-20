@@ -201,6 +201,11 @@ uninstall() {
 		die "Save/revert pending network/firewall changes first"
 	snapshot
 	tailscale down 2>/dev/null || true
+	if [ -f "$TSLAN_ROOT/etc/init.d/tslan-bypass" ]; then
+		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-bypass" stop
+		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-bypass" disable
+		"$TSLAN_ROOT/usr/libexec/tslan-passwall2" remove
+	fi
 	sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan" disable || true
 	"$TSLAN_ROOT/etc/init.d/tailscale" disable || true
 	"$TSLAN_ROOT/etc/init.d/tailscale" stop || true
@@ -274,6 +279,7 @@ main() {
 		uci set tslan.settings.shields_up=0
 	fi
 	uci set "tslan.settings.lan_network=$LAN"
+	[ -n "$(get tslan.settings.bypass_passwall2)" ] || uci set tslan.settings.bypass_passwall2=0
 	uci commit tslan
 	chmod 600 "$TSLAN_ROOT/etc/config/tslan"
 	load_settings
@@ -296,6 +302,7 @@ main() {
 		"$TSLAN_ROOT/usr/libexec/tslan-control" boot > "$TSLAN_DATA/startup.log" 2>&1 || start_result=$?
 	else
 		"$TSLAN_ROOT/etc/init.d/tailscale" stop
+		configure_bypass
 	fi
 	write_report
 	say ''

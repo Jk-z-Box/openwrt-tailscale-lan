@@ -9,13 +9,13 @@ IPv6 用于本机访问对端的 `fd7a:115c:a1e0::/48` 地址，可通过现有 
 在 **OpenWrt 路由器的 SSH 终端**以 root 执行：
 
 ```sh
-wget -O /tmp/tslan-install.sh https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.1.1/install.sh && sh /tmp/tslan-install.sh
+wget -O /tmp/tslan-install.sh https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.2.0/install.sh && sh /tmp/tslan-install.sh
 ```
 
 也可以使用 curl：
 
 ```sh
-curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.1.1/install.sh -o /tmp/tslan-install.sh && sh /tmp/tslan-install.sh
+curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.2.0/install.sh -o /tmp/tslan-install.sh && sh /tmp/tslan-install.sh
 ```
 
 脚本包含全部管理页和后端文件，不需要从第三方软件源安装 LuCI 插件。安装期间的 Tailscale、LuCI 及依赖来自路由器已配置的软件源；脚本不替换软件源，不跨固件安装内核模块，不关闭软件包签名校验，也不执行全系统软件包升级。
@@ -40,7 +40,7 @@ curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.1.1
 
 如果系统以 `ipv6.disable=1` 或 `net.ipv6.conf.all.disable_ipv6=1` 全局禁用了 IPv6，脚本会在安装软件和修改配置前停止。直接写全局开关会改变所有接口，因此本项目不会自动执行该操作；需先按当前固件恢复内核 IPv6 能力，并按接口保留 LAN/WAN 的限制。这个检查也会在开机启动时再次执行。
 
-已在 **OpenWrt 23.05.5 x86/64、Tailscale 1.58.2** 设备上验证本机双栈 HTTP、接入 LAN 桥的隔离客户端 IPv4 转发/NAT、重启自动恢复，以及原有网络配置保持一致。另有 25 项集成测试、ShellCheck 和 LuCI 前端检查。其他固件和架构仍需各自验收，详见 [测试记录](docs/TESTING.md)。
+已在 **OpenWrt 23.05.5 x86/64、Tailscale 1.58.2** 设备上验证本机双栈 HTTP、接入 LAN 桥的隔离客户端 IPv4 转发/NAT、重启自动恢复，以及原有网络配置保持一致。另有 32 项自动化测试、ShellCheck 和 LuCI 前端检查。各版本的具体测试范围见 [测试记录](docs/TESTING.md)。
 
 如果 OpenWrt 是旁路由，需要在实际主路由上添加静态路由：
 
@@ -68,7 +68,7 @@ sh /tmp/tslan-install.sh
 
 项目独占 `network.tslan`、`network.tslan_device`、`firewall.tslan`、`firewall.tslan_lan`、`firewall.tslan_icmp6`、`firewall.tslan_no_forward6_in/out`，重复执行不会增加重复规则。若其他插件或手动配置已把 `tailscale0` 绑定到另一接口/设备配置/区域，脚本会停止并给出冲突对象；请先迁移旧配置。它不会删除其他插件来强行安装。
 
-从 v1.0.0 / v1.1.0 升级：执行上面的 v1.1.1 命令即可。原有服务选项和登录身份保留，托管防火墙区域升级为双栈，LAN 转发显式限定为 IPv4。升级和应用配置会重启 Tailscale，期间隧道连接会短暂中断。
+从 v1.0.0 / v1.1.x 升级：执行上面的 v1.2.0 命令即可。原有服务选项和登录身份保留，托管防火墙区域升级为双栈，LAN 转发显式限定为 IPv4。新增的 PassWall2 绕过选项默认关闭，后续升级保留其值。升级和应用配置会重启 Tailscale，期间隧道连接会短暂中断。
 
 v1.1.1 修复了实机发现的三项安装兼容问题：BusyBox 缺少 `timeout`、首次安装时 UCI 配置文件尚不存在，以及 Tailscale 1.58.2 的 `set` 子命令不支持 `--netfilter-mode`。对于最后一种情况，通过本机 Unix socket 的偏好接口仅修改 `NetfilterMode`，保留其他非托管选项；不会将完整偏好响应写入日志。
 
@@ -84,6 +84,33 @@ v1.1.1 修复了实机发现的三项安装兼容问题：BusyBox 缺少 `timeou
 
 管理页复用 LuCI 登录和 rpcd 权限，不额外启动一个公开的 Web 管理端口。专用 RPC 仅允许固定操作，没有通用 `file.exec` 权限；用户配置使用独立参数传给 CLI。
 
+## 与 PassWall2 本机代理共存
+
+当 PassWall2 节点使用 Tailscale 地址，同时启用了「路由器本机代理」，Tailscale 自身的公网连接也可能被交给该节点，形成循环依赖。
+
+在 **服务 → Tailscale** 勾选 **绕过 PassWall2 代理（防止回环）**，保存并应用即可。该功能支持 PassWall2 的 **nftables 后端**，默认关闭；需要系统已有 `nft` 命令。iptables 后端不在此功能支持范围内。
+
+开启后的规则只作用于 `inet passwall2` 的 `mangle_output`、`nat_output`、`mangle_prerouting` 和 `dstnat` 链：
+
+- 本机外连匹配 Tailscale 原有标记 `0x80000/0xff0000` 后提前返回，不改写标记；同时豁免经 `tailscale0` 输出的流量。
+- 入站/转发处理豁免来自 `tailscale0` 的流量，以及目的地址为 `100.64.0.0/10`、`fd7a:115c:a1e0::/48` 的流量。这些地址将直接按内核路由处理，不再交给 PassWall2 分流。
+- 原 OpenWrt 防火墙的访问限制仍然有效；此选项不会额外允许 Tailnet 主动访问 LAN，也不会打开 LAN IPv6 转发。
+- 通过独立的 procd 服务每 **3 秒**检查一次规则顺序和数量，自动补回 PassWall2 重启、防火墙重载后缺失的规则。重载到下一次检查之间可能短暂中断，不保证无缝切换。
+- 不修改 PassWall2 的程序文件、节点、分流配置或包标记；关闭选项、停止 Tailscale、卸载时只删除本项目带标识的规则并停止检查进程。
+
+页面显示 `ACTIVE`（四个预期链均已处理）、`PENDING`（等待 PassWall2 nftables 链）、`ERROR`（更新失败或检查进程过期）或 `OFF`。公网出口和基础 DNS 必须能独立支持 Tailscale 建立连接；此选项不改系统 DNS，也不会强行绕过其他代理插件。
+
+命令行等效操作：
+
+```sh
+uci set tslan.settings.bypass_passwall2='1'
+uci commit tslan
+/usr/libexec/tslan-control apply
+/usr/libexec/tslan-passwall2 status
+```
+
+关闭时将该值设为 `0` 并再次应用。
+
 ## 具体修改了哪些配置
 
 | 路径 / 对象 | 改动 |
@@ -98,6 +125,8 @@ v1.1.1 修复了实机发现的三项安装兼容问题：BusyBox 缺少 `timeou
 | `/etc/config/tslan` | 保存本项目管理选项 |
 | Tailscale 客户端偏好 | `netfilter-mode=off`，由 OpenWrt 管理防火墙；应用页面中的 DNS、路由、Shields Up 和非空设备名称 |
 | `/etc/init.d/tslan` | 开机启动并恢复选项；保留软件包原有 `tailscale` init 文件，关闭其独立自启动，避免重复管理 |
+| `/etc/init.d/tslan-bypass`、`/usr/libexec/tslan-passwall2` | 可选 PassWall2 防回环规则及每 3 秒检查；仅开关启用且 Tailscale 启用时运行 |
+| `inet passwall2` 的四个代理基础链 | 开关启用时插入 `tslan-pw2-v1:*` 标识的提前返回规则，关闭时按规则句柄仅删除这些规则 |
 | `/usr/lib/tslan/`、`/usr/libexec/tslan-control`、`/usr/libexec/tslan-check` | 配置、服务控制和只读双栈检查 |
 | `/usr/libexec/rpcd/tslan`、`/usr/share/rpcd/acl.d/luci-app-tslan.json` | 专用 RPC 后端和访问权限 |
 | `/usr/share/luci/menu.d/luci-app-tslan.json` | 「服务 → Tailscale」菜单 |

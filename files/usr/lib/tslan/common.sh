@@ -29,7 +29,9 @@ load_settings() {
 	ACCEPT_DNS=$(get tslan.settings.accept_dns)
 	ACCEPT_ROUTES=$(get tslan.settings.accept_routes)
 	SHIELDS_UP=$(get tslan.settings.shields_up)
-	for value in "$ENABLED" "$ACCEPT_DNS" "$ACCEPT_ROUTES" "$SHIELDS_UP"; do
+	BYPASS_PASSWALL2=$(get tslan.settings.bypass_passwall2)
+	BYPASS_PASSWALL2=${BYPASS_PASSWALL2:-0}
+	for value in "$ENABLED" "$ACCEPT_DNS" "$ACCEPT_ROUTES" "$SHIELDS_UP" "$BYPASS_PASSWALL2"; do
 		bool "$value" || die "Invalid boolean in /etc/config/tslan"
 	done
 	identifier "$LAN" || die "Invalid LAN interface name"
@@ -213,7 +215,22 @@ apply_preferences() {
 	fi
 }
 
+configure_bypass() {
+	if [ "$ENABLED" = 1 ] && [ "$BYPASS_PASSWALL2" = 1 ]; then
+		command -v nft >/dev/null 2>&1 || die "PassWall2 bypass requires the nftables backend and nft command"
+		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-bypass" enable
+		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-bypass" restart
+		"$TSLAN_ROOT/usr/libexec/tslan-passwall2" sync
+	else
+		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-bypass" stop
+		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-bypass" disable
+		"$TSLAN_ROOT/usr/libexec/tslan-passwall2" remove
+	fi
+}
+
 start_client() {
+	# Protect daemon transport before it attempts control/DERP/peer connections.
+	configure_bypass
 	# Restart even after an existing installation: the daemon caches IPv6
 	# capability, and netifd reload may have removed its previous addresses.
 	"$TSLAN_ROOT/etc/init.d/tailscale" stop
@@ -259,6 +276,10 @@ Nondefault existing Tailscale options not managed by this page remain in Tailsca
 REPORT
 		printf 'Preferences: enabled=%s, accept-dns=%s, accept-routes=%s, shields-up=%s, hostname=%s\n' \
 			"$ENABLED" "$ACCEPT_DNS" "$ACCEPT_ROUTES" "$SHIELDS_UP" "${HOSTNAME:-(unchanged)}"
+		printf 'PassWall2 bypass option: %s (default off; nftables backend).\n' "$BYPASS_PASSWALL2"
+		printf 'When enabled, labelled RETURN rules in PassWall2 output/prerouting bypass Tailscale outer marks, tailscale0 and Tailnet destinations. No marks or PassWall2 config files are rewritten.\n'
+		printf 'A procd guard checks every 3 seconds and restores rules after PassWall2/firewall reload; a brief reload window can occur.\n'
+		"$TSLAN_ROOT/usr/libexec/tslan-passwall2" status
 		printf 'Service: /etc/init.d/tslan manages startup and applies preferences; stock tailscale init is preserved.\n'
 		printf 'Backup directory: %s\n' "$(cat "$TSLAN_DATA/latest-backup" 2>/dev/null || true)"
 		printf 'Default gateway requirement: LAN traffic for Tailscale must reach this OpenWrt router.\n'

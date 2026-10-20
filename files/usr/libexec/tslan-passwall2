@@ -1,0 +1,138 @@
+#!/bin/sh
+# Only manage our labelled RETURN rules in PassWall2's nftables base chains.
+set -eu
+umask 077
+TSLAN_ROOT=${TSLAN_ROOT:-}
+run="$TSLAN_ROOT/var/run/tslan"
+self="$TSLAN_ROOT/usr/libexec/tslan-passwall2"
+prefix=tslan-pw2-v1
+chains='mangle_output nat_output mangle_prerouting dstnat'
+mkdir -p "$run"
+
+setting() { uci -q get "tslan.settings.$1" 2>/dev/null || true; }
+enabled=$(setting enabled)
+bypass=$(setting bypass_passwall2)
+bypass=${bypass:-0}
+
+status_write() {
+	printf '%s\n' "$*" > "$run/passwall2.status.tmp"
+	mv "$run/passwall2.status.tmp" "$run/passwall2.status"
+	date +%s > "$run/passwall2.checked"
+}
+
+case "${1:-sync}" in
+	status)
+		if [ "$bypass" = 0 ] || [ "$enabled" = 0 ]; then
+			printf '%s\n' 'OFF: PassWall2 bypass is disabled.'
+		else
+			checked=$(cat "$run/passwall2.checked" 2>/dev/null || true)
+			case "$checked" in ''|*[!0-9]*) checked=0;; esac
+			if [ "$(( $(date +%s) - checked ))" -gt 15 ]; then
+				printf '%s\n' 'ERROR: bypass guard has not checked rules recently; apply settings.'
+			else
+				cat "$run/passwall2.status" 2>/dev/null || printf '%s\n' 'PENDING: awaiting bypass guard.'
+			fi
+		fi
+		exit 0;;
+	watch)
+		trap 'exit 0' INT TERM
+		while [ ! -e "$run/passwall2.paused" ]; do
+			"$self" sync || true
+			sleep 3
+		done
+		exit 0;;
+	sync|remove) :;;
+	*) exit 2;;
+esac
+
+mode=${1:-sync}
+if [ "$mode" != remove ]; then
+	case "$bypass:$enabled" in 0:0|0:1|1:0|1:1) :;; *)
+		printf '%s\n' 'ERROR: invalid Tailscale bypass settings.' >&2; exit 1;;
+	esac
+fi
+if [ "$mode" = remove ] || [ "$bypass" = 0 ] || [ "$enabled" = 0 ] || [ -e "$run/passwall2.paused" ]; then
+	mode=remove
+fi
+if ! command -v nft >/dev/null 2>&1; then
+	if [ "$mode" = remove ]; then status_write 'OFF: PassWall2 bypass is disabled.'; exit 0; fi
+	status_write 'ERROR: PassWall2 bypass requires its nftables backend and the nft command.'
+	exit 1
+fi
+
+# Serialize timer, startup and explicit apply. Recover a lock left by a dead process.
+lock="$run/passwall2.lock"
+tries=0
+while ! mkdir "$lock" 2>/dev/null; do
+	pid=$(cat "$lock/pid" 2>/dev/null || true)
+	case "$pid" in
+		''|*[!0-9]*) :;;
+		*) if ! kill -0 "$pid" 2>/dev/null; then rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || true; fi;;
+	esac
+	tries=$((tries + 1))
+	[ "$tries" -lt 5 ] || exit 1
+	sleep 1
+done
+printf '%s\n' "$$" > "$lock/pid"
+batch=
+cleanup() {
+	[ -z "$batch" ] || rm -f "$batch"
+	rm -f "$lock/pid"
+	rmdir "$lock" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+# stop_service may have paused us while we waited for the lock.
+[ ! -e "$run/passwall2.paused" ] || mode=remove
+batch=$(mktemp "$run/passwall2-rules.XXXXXXXX")
+found=0
+outputs=0
+for chain in $chains; do
+	rules=$(nft -a -nn list chain inet passwall2 "$chain" 2>/dev/null) || continue
+	found=$((found + 1))
+	case "$chain" in
+		mangle_output|nat_output) labels='outer tun-out'; outputs=$((outputs + 1));;
+		*) labels='tun-in tail4 tail6';;
+	esac
+	# Check that our rules are first, exactly once. Ignore chain/table handles.
+	# Intentional splitting of the fixed label lists above.
+	# shellcheck disable=SC2086
+	set -- $labels
+	want=$#
+	first=$(printf '%s\n' "$rules" | awk -v n="$want" -v p="$prefix:" '
+		/# handle [0-9]+/ && $1 != "table" && $1 != "chain" && $1 != "type" {
+			if (++i > n) next
+			split($0, a, "comment \""); split(a[2], b, "\"")
+			if (index(b[1], p) == 1) printf "%s%s", sep, substr(b[1], length(p)+1)
+			else printf "%sforeign", sep
+			sep=" "
+		}')
+	owned=$(printf '%s\n' "$rules" | awk -v p="comment \"$prefix:" 'index($0,p) && $NF ~ /^[0-9]+$/ {print $NF}')
+	count=$(printf '%s\n' "$owned" | awk 'NF {n++} END {print n+0}')
+	if [ "$mode" = sync ] && [ "$first" = "$labels" ] && [ "$count" = "$want" ]; then continue; fi
+	for handle in $owned; do
+		printf 'delete rule inet passwall2 %s handle %s\n' "$chain" "$handle" >> "$batch"
+	done
+	[ "$mode" = sync ] || continue
+	# Insert in reverse order: nft insert prepends. Never overwrite a packet mark.
+	case "$chain" in
+		mangle_output|nat_output)
+			printf 'insert rule inet passwall2 %s oifname "tailscale0" counter return comment "%s:tun-out"\n' "$chain" "$prefix" >> "$batch"
+			printf 'insert rule inet passwall2 %s meta mark & 0x00ff0000 == 0x00080000 counter return comment "%s:outer"\n' "$chain" "$prefix" >> "$batch";;
+		*)
+			printf 'insert rule inet passwall2 %s ip6 daddr fd7a:115c:a1e0::/48 counter return comment "%s:tail6"\n' "$chain" "$prefix" >> "$batch"
+			printf 'insert rule inet passwall2 %s ip daddr 100.64.0.0/10 counter return comment "%s:tail4"\n' "$chain" "$prefix" >> "$batch"
+			printf 'insert rule inet passwall2 %s iifname "tailscale0" counter return comment "%s:tun-in"\n' "$chain" "$prefix" >> "$batch";;
+	esac
+done
+if [ -s "$batch" ] && ! nft -f "$batch" 2>/dev/null; then
+	status_write 'ERROR: PassWall2 rules changed or nft update failed; guard will retry.'
+	exit 1
+fi
+if [ "$mode" = remove ]; then
+	status_write 'OFF: owned PassWall2 bypass rules removed.'
+elif [ "$outputs" = 2 ] && [ "$found" = 4 ]; then
+	status_write 'ACTIVE: Tailscale outer traffic and Tailnet IPv4/IPv6 bypass PassWall2; original marks preserved.'
+else
+	status_write "PENDING: found $found/4 PassWall2 nftables chains; waiting for its nftables backend."
+fi

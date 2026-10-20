@@ -48,6 +48,8 @@ case "$ACTION" in
 		uci show network.tslan
 		uci show firewall.tslan
 		uci show firewall.tslan_lan
+		say '=== PassWall2 bypass guard ==='
+		"$TSLAN_ROOT/usr/libexec/tslan-passwall2" status
 		say '=== Note ==='
 		say 'Actual LAN -> peer reachability must be tested from a LAN device to an allowed peer service.'
 		;;
@@ -64,6 +66,7 @@ case "$ACTION" in
 		ENABLED=0
 		"$TSLAN_ROOT/etc/init.d/tailscale" stop
 		"$TSLAN_ROOT/etc/init.d/tailscale" disable
+		configure_bypass
 		write_report
 		;;
 	*)
@@ -78,6 +81,7 @@ case "$ACTION" in
 		if [ "$ENABLED" = 0 ]; then
 			tailscale down 2>/dev/null || true
 			"$TSLAN_ROOT/etc/init.d/tailscale" stop
+			configure_bypass
 			write_report
 			exit 0
 		fi

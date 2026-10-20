@@ -35,6 +35,7 @@ return view.extend({
 			['Tailscale 分配的 IPv4', (st.TailscaleIPs || []).filter(function(ip) { return ip.indexOf(':') < 0; }).join(', ') || '未分配'],
 			['Tailscale 分配的 IPv6', (st.TailscaleIPs || []).filter(function(ip) { return ip.indexOf(':') >= 0; }).join(', ') || '未分配'],
 			['本机双栈检查', E('pre', { style: 'white-space:pre-wrap;margin:0' }, result.host_stack || '等待检查；分配地址不代表内核路由已就绪。')],
+			['PassWall2 绕过状态', result.passwall2_bypass || '等待检查'],
 			['设备名称', self.HostName || '—'],
 			['操作状态', result.busy ? '执行中，请稍候…' :
 				(result.last_exit && result.last_exit !== '0' ? '上次操作失败，请查看下方日志' : '就绪')]
@@ -93,6 +94,9 @@ return view.extend({
 		option = section.option(form.Flag, 'enabled', '启用 Tailscale');
 		option.default = '1'; option.rmempty = false;
 		option.description = '控制当前服务和开机启动；保存并应用后生效。';
+		option = section.option(form.Flag, 'bypass_passwall2', '绕过 PassWall2 代理（防止回环）');
+		option.default = '0'; option.rmempty = false;
+		option.description = '适用于 PassWall2 的 nftables 后端。让 Tailscale 外层连接、tailscale0 流量及 Tailnet IPv4/IPv6 目的地址绕过透明代理；其他流量按原策略处理。启用后每 3 秒检查规则，自动修复重载后丢失的规则，重载瞬间可能短暂中断。公网出口及基础 DNS 需能独立连通。';
 		option = section.option(form.Value, 'hostname', '设备名称');
 		option.placeholder = '留空保持现有名称';
 		option.validate = function(sid, value) {

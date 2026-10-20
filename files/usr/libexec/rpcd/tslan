@@ -17,6 +17,7 @@ case "${1:-}" in
 				json_add_string tailscale "$(tailscale status --json 2>/dev/null || true)"
 				json_add_string version "$(tailscale version 2>/dev/null | head -n 1)"
 				json_add_string host_stack "$(/usr/libexec/tslan-check 2>/dev/null || true)"
+				json_add_string passwall2_bypass "$(/usr/libexec/tslan-passwall2 status 2>/dev/null || true)"
 				json_add_string log "$(tail -c 12000 "$run/job.log" 2>/dev/null || true)"
 				json_add_string last_exit "$(cat "$run/last-exit" 2>/dev/null || true)"
 				json_add_boolean busy "$([ -d "$run/lock" ] && printf 1 || printf 0)"
