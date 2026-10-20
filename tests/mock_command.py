@@ -88,7 +88,7 @@ if name == "uci":
         raise ValueError(cmd)
 elif name in ("opkg", "apk"):
     installed = read(root / "packages.json", [])
-    available = ["tailscale", "tailscaled", "luci", "rpcd", "uhttpd", "uhttpd-mod-ubus", "jshn", "jsonfilter"]
+    available = ["tailscale", "tailscaled", "ip-full", "luci", "rpcd", "uhttpd", "uhttpd-mod-ubus", "jshn", "jsonfilter"]
     unavailable = os.environ.get("MISSING_PACKAGE")
     if unavailable in available:
         available.remove(unavailable)
@@ -140,6 +140,11 @@ elif name == "tailscale":
             state["AuthURL"] = "https://login.tailscale.com/a/test-only"
         else:
             state["BackendState"] = "Running"
+            knobs = read(root / "sysctl.json", {})
+            write(root / "addresses.json", {
+                "4": True,
+                "6": knobs.get("net.ipv6.conf.tailscale0.disable_ipv6") == "0",
+            })
         write(root / "tailscale.json", state)
         sys.exit(1 if "AuthURL" in state else 0)
     elif args[0] in ("down", "logout"):
@@ -147,14 +152,25 @@ elif name == "tailscale":
         write(root / "tailscale.json", state)
     elif args[0] == "version":
         print("1.80.3")
+    elif args[0] == "ip":
+        if state["BackendState"] == "Running":
+            print("100.80.1.2" if args[1] == "-4" else "fd7a:115c:a1e0::1234")
+        else:
+            sys.exit(1)
     else:
         raise ValueError(args)
 elif name == "jsonfilter":
     value = json.loads(sys.stdin.read())
-    for part in args[args.index("-e") + 1].removeprefix("@.").split("."):
+    expression = args[args.index("-e") + 1]
+    if expression == "@.Peer.*.TailscaleIPs[*]":
+        for peer in value.get("Peer", {}).values():
+            for address in peer.get("TailscaleIPs", []):
+                print(address)
+        sys.exit(0)
+    for part in expression.removeprefix("@.").split("."):
         value = value.get(part, "") if isinstance(value, dict) else ""
     if value != "":
-        print(value)
+        print(str(value).lower() if isinstance(value, bool) else value)
 elif name == "sysctl":
     path = root / "sysctl.json"
     value = read(path, {"net.ipv4.ip_forward": "0"})
@@ -163,8 +179,12 @@ elif name == "sysctl":
         value[k] = v
         write(path, value)
     elif "-n" in args:
+        if args[-1] not in value:
+            sys.exit(1)
         print(value[args[-1]])
     else:
+        if args[-1] not in value:
+            sys.exit(1)
         print(f"{args[-1]} = {value[args[-1]]}")
 elif name == "fw4":
     if os.environ.get("FW_FAIL"):
@@ -175,9 +195,54 @@ elif name == "timeout":
 elif name in ("network", "firewall", "rpcd", "uhttpd", "tslan", "tailscaled"):
     pass
 elif name == "daemon-init":
+    if args[0] == "start":
+        state = read(root / "tailscale.json", {"BackendState": "NeedsLogin"})
+        # Model address assignment failure when IPv6 is disabled at daemon start.
+        tun_present = (root / "sys/class/net/tailscale0/tun_flags").exists()
+        knobs = read(root / "sysctl.json", {})
+        v6_on = knobs.get("net.ipv6.conf.tailscale0.disable_ipv6") == "0"
+        write(root / "addresses.json", {
+            "4": tun_present and state["BackendState"] == "Running",
+            "6": tun_present and v6_on and state["BackendState"] == "Running"
+                 and not os.environ.get("MISSING_V6_ADDRESS"),
+        })
+    elif args[0] == "stop":
+        write(root / "addresses.json", {})
+elif name == "ifup":
     pass
+elif name == "ubus":
+    print(json.dumps({"up": not os.environ.get("IFUP_FAIL")}))
+elif name == "sleep":
+    pass  # Bounded retry tests do not need wall-clock delays.
 elif name == "ip":
-    print("mock policy route output")
+    device = root / "sys/class/net/tailscale0"
+    if args[:3] == ["link", "show", "dev"]:
+        sys.exit(0 if (device / "tun_flags").exists() else 1)
+    elif args[:2] == ["tuntap", "add"]:
+        device.mkdir(parents=True, exist_ok=True)
+        (device / "tun_flags").write_text("0x1001\n")
+        knobs = read(root / "sysctl.json", {})
+        knobs["net.ipv6.conf.tailscale0.disable_ipv6"] = knobs.get(
+            "net.ipv6.conf.default.disable_ipv6", "0")
+        write(root / "sysctl.json", knobs)
+    elif args[:2] == ["link", "set"]:
+        if "alias" in args:
+            (device / "ifalias").write_text(args[-1])
+    elif args[:2] == ["link", "delete"]:
+        import shutil
+        shutil.rmtree(device)
+    elif "addr" in args:
+        family = args[0][1:]
+        if read(root / "addresses.json", {}).get(family):
+            proto, address = ("inet", "100.80.1.2/32") if family == "4" else ("inet6", "fd7a:115c:a1e0::1234/128")
+            print(f"6: tailscale0    {proto} {address} scope global tailscale0")
+    elif "route" in args and "get" in args:
+        family = args[0][1:]
+        target = args[-1]
+        dev = "eth0" if os.environ.get("WRONG_ROUTE") == family else "tailscale0"
+        print(f"{target} dev {dev} table 52")
+    else:
+        print("mock policy route output")
 elif name == "sha256sum":
     import hashlib
     print(hashlib.sha256(pathlib.Path(args[0]).read_bytes()).hexdigest(), args[0])

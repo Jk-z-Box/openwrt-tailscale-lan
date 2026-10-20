@@ -1,10 +1,10 @@
 # 验证记录
 
-版本：1.0.0。
+版本：1.1.0。
 
 ## 已验证
 
-在隔离的临时目录中运行**实际安装脚本与服务控制脚本**，以状态化命令替身模拟 OpenWrt 的 UCI、软件包管理、Tailscale 和服务管理：
+在隔离的临时目录中运行**实际安装脚本与服务控制脚本**，以状态化命令替身模拟 OpenWrt 的 UCI、软件包管理、Tailscale 和服务管理。集成测试包含 22 个测试方法（部分覆盖多个故障场景）：
 
 - opkg 安装、apk 安装。
 - 重复安装不增加重复防火墙转发。
@@ -16,6 +16,12 @@
 - 登录、停止、启动及服务选项持久化。
 - 守护进程配置失败时返回非零并保留报告。
 - 卸载保留其他防火墙配置和 Tailscale 身份。
+- 原 IPv4 托管区域升级为双栈，LAN 转发显式保留为 IPv4；添加 IPv6 转发拒绝与必要 ICMPv6 规则。
+- `default.disable_ipv6=1` 时，在守护进程启动前仅开启 TUN 的 IPv6；全局/default/物理接口 sysctl 保持原值。
+- 全局 IPv6 被禁用、内核缺少 IPv6、全局防火墙禁用 IPv6 时，在安装包和修改配置前报错。
+- 检测“控制面分配了地址、内核未安装 IPv6 地址”及 IPv4/IPv6 实际路由走错接口。
+- 未登录或无对端时报告待验证，不误报本机双栈已经通过。
+- 模拟重启后 TUN 重建、重新应用配置、TUN 所有权冲突和卸载清理。
 
 另外运行：
 
@@ -31,6 +37,7 @@
 - 特定固件的软件源、依赖、存储与 init/rpcd 版本均兼容。
 - 首次账户授权、真实 Tailnet ACL 和 Tailscale 控制面的行为。
 - 内核转发、nftables/iptables NAT 与回包路径的实际结果。
+- Linux TUN、netifd 与真实 tailscaled 的启动时序，以及 IPv4 WAN 承载的实际 IPv6 端口访问。
 - 重启后服务恢复和真实 LuCI 登录会话的完整交互。
 - 吞吐量、CPU/内存消耗、MTU、直接连接或 DERP 中继性能。
 
@@ -39,10 +46,20 @@
 1. 运行 `sh /tmp/tslan-install.sh --check`，确认软件源检查通过。
 2. 安装后检查 `/etc/tslan/install-report.txt` 和 `tailscale status`。
 3. 在 LuCI「服务 → Tailscale」授权登录，确认节点处于 Running。
-4. 在路由器运行 `tailscale ping <目标100.x地址>`；这仅验证路由器的 Tailscale 路径。
+4. 在路由器运行 `/usr/libexec/tslan-check`；确认两个地址族的地址存在于 `tailscale0`，到被检查对端的有效路由也经过 `tailscale0`。检查 `ip -4 addr show dev tailscale0`、`ip -6 addr show dev tailscale0` 与 `ip -4/-6 route get <对端地址>`。
 5. 在一台**未安装 Tailscale**、以 OpenWrt 为网关的 LAN 设备上连接远端实际服务，例如 SSH 或 HTTP。此步才验证 LAN 转发和 NAT。
 6. 检查目标端 ACL/防火墙；ping 被禁不代表 TCP 服务不可访问。
 7. 通过管理页测试关闭、开启和修改设备名，再重启路由器复测。
 8. 如需卸载，运行安装脚本的 `--uninstall`，检查其他网络配置保持正常。
+
+本机双栈还需要以下真机验收：
+
+1. 安装前保存 `uci export network`、`uci export dhcp`、`ip -4 route show table main`、`ip -6 route show table main`、DNS 配置，以及 `/proc/sys/net/ipv6/conf/` 中全局/default/各物理接口的值。备份仅保存在设备本地。
+2. 确认 WAN 仅有 IPv4。分别用普通 `ping -4/-6` 或 HTTP/SSH 客户端访问对端的两类 Tailscale 地址；目标服务必须支持相应地址族。只执行 `tailscale ping` 不足以证明主机内核数据路径正常。
+3. 查看 `nft list ruleset`（fw4）或 `ip6tables-save`（fw3），确认本机输出、回包、必要 ICMPv6 正常，未允许 LAN IPv6 转发及 NAT66。
+4. 对比原 LAN/WAN、DHCP/DNS、默认路由和物理接口 IPv6 参数；允许新增本项目托管对象及 Tailscale 专属地址/路由。
+5. 重启路由器并重复两个地址族的实际服务访问。再测试停止/启动，以及默认禁止新接口 IPv6 的场景。
+
+这些步骤尚未在本项目的真实设备上执行，模拟测试通过不能替代以上验收。
 
 请在 Issue 中附 OpenWrt 版本、CPU 架构、主路由/旁路由拓扑、失败步骤和脱敏错误日志。

@@ -32,7 +32,9 @@ return view.extend({
 		var rows = [
 			['客户端版本', result.version || '不可用'],
 			['连接状态', st.BackendState || '服务未启动'],
-			['本机 Tailscale IP', (st.TailscaleIPs || []).join(', ') || '未分配'],
+			['Tailscale 分配的 IPv4', (st.TailscaleIPs || []).filter(function(ip) { return ip.indexOf(':') < 0; }).join(', ') || '未分配'],
+			['Tailscale 分配的 IPv6', (st.TailscaleIPs || []).filter(function(ip) { return ip.indexOf(':') >= 0; }).join(', ') || '未分配'],
+			['本机双栈检查', E('pre', { style: 'white-space:pre-wrap;margin:0' }, result.host_stack || '等待检查；分配地址不代表内核路由已就绪。')],
 			['设备名称', self.HostName || '—'],
 			['操作状态', result.busy ? '执行中，请稍候…' :
 				(result.last_exit && result.last_exit !== '0' ? '上次操作失败，请查看下方日志' : '就绪')]
@@ -85,7 +87,7 @@ return view.extend({
 
 	render: function(data) {
 		var self = this, option;
-		this.map = new form.Map('tslan', 'Tailscale', 'LAN 设备通过本路由器访问 Tailscale IPv4 地址。路由器必须是这些流量的网关。');
+		this.map = new form.Map('tslan', 'Tailscale', '本机通过 tailscale0 使用 Tailscale IPv4 / IPv6；LAN 设备继续通过本路由器访问 Tailscale IPv4。保留现有 LAN/WAN IPv6 设置，不开启 IPv6 转发和地址分发。');
 		var section = this.map.section(form.NamedSection, 'settings', 'settings', '服务选项');
 		section.anonymous = true;
 		option = section.option(form.Flag, 'enabled', '启用 Tailscale');
@@ -103,7 +105,7 @@ return view.extend({
 		option.description = '授权其所属防火墙区域访问 Tailscale；同区域的其他网络也会获得访问权限。';
 		option = section.option(form.Flag, 'accept_routes', '接受远端子网路由');
 		option.default = '0'; option.rmempty = false;
-		option.description = '仅访问 100.x 设备地址无需开启。开启后可使用其他节点发布且已批准的子网路由，注意与本地网段冲突。';
+		option.description = '访问设备自身的 100.x / fd7a:115c:a1e0:: 地址无需开启。开启后接受已批准的远端子网路由，请注意与现有路由冲突；LAN 转发仍仅限 IPv4。';
 		option = section.option(form.Flag, 'accept_dns', '使用 Tailscale DNS');
 		option.default = '0'; option.rmempty = false;
 		option.description = '默认关闭。开启可能修改路由器 DNS；此选项不会自动为 LAN 配置 MagicDNS。';

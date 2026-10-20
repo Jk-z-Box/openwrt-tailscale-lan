@@ -16,10 +16,11 @@ function E(tag, attrs, children) {
 }
 const fixtures = {
   status: { tailscale: JSON.stringify({
-    BackendState: 'Running', TailscaleIPs: ['100.80.1.2'],
+    BackendState: 'Running', TailscaleIPs: ['100.80.1.2', 'fd7a:115c:a1e0::1234'],
     Self: { HostName: '<img src=x onerror=alert(1)>' },
     Peer: { one: { HostName: 'server', TailscaleIPs: ['100.90.1.2'], Online: true } }
-  }), version: '1.80.3', busy: false, last_exit: '0' },
+  }), version: '1.80.3', busy: false, last_exit: '0',
+  host_stack: 'ERROR: IPv6 route does not use tailscale0' },
   report: { report: 'Managed interface: tslan' },
   action: { accepted: true }
 };
@@ -70,6 +71,9 @@ function walk(node, result = []) {
   assert.equal(walk(safe).filter(n => n.tag === 'a').length, 1);
   assert.doesNotThrow(() => view.renderStatus({ tailscale: 'not json' }));
   assert.ok(!walk(view.renderStatus(fixtures.status)).some(n => n.tag === 'img'));
+  const statusText = JSON.stringify(view.renderStatus(fixtures.status));
+  assert.ok(statusText.includes('fd7a:115c:a1e0::1234'));
+  assert.ok(statusText.includes(fixtures.status.host_stack));
 
   await view.refresh();
   assert.equal(nodes['tslan-peers'].children.length, 1);

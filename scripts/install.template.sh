@@ -79,7 +79,7 @@ preflight() {
 		[0-9][0-9].*) major=${release%%.*}; [ "$major" -ge 23 ] || die "OpenWrt 23.05 or later is required";;
 		*) die "Unrecognized OpenWrt release: $release";;
 	esac
-	for cmd in uci ip sysctl tar gzip base64 sha256sum mktemp timeout; do
+	for cmd in uci ip sysctl tar gzip base64 sha256sum mktemp timeout ubus ifup; do
 		command -v "$cmd" >/dev/null 2>&1 || die "Required command not found: $cmd"
 	done
 	[ -f "$TSLAN_ROOT/etc/config/network" ] && [ -f "$TSLAN_ROOT/etc/config/firewall" ] ||
@@ -132,7 +132,7 @@ check_packages() {
 	NEEDED=
 	# Modern tailscale packages include/provide tailscaled. Check the actual
 	# executable after installation and add the older split package if needed.
-	for package in tailscale luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter; do
+	for package in tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter; do
 		if ! installed "$package"; then
 			available "$package" || die "Package '$package' is unavailable for this firmware/architecture"
 			NEEDED="$NEEDED $package"
@@ -188,8 +188,9 @@ install_payload() {
 
 uninstall() {
 	[ -f "$TSLAN_ROOT/usr/lib/tslan/common.sh" ] || die "Integration is not installed"
+	TSLAN_LIBDIR="$STAGE/payload/usr/lib/tslan"
 	# shellcheck source=files/usr/lib/tslan/common.sh
-	. "$TSLAN_ROOT/usr/lib/tslan/common.sh"
+	. "$TSLAN_LIBDIR/common.sh"
 	[ -z "$(uci -q changes network)" ] && [ -z "$(uci -q changes firewall)" ] ||
 		die "Save/revert pending network/firewall changes first"
 	snapshot
@@ -197,7 +198,7 @@ uninstall() {
 	sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan" disable || true
 	"$TSLAN_ROOT/etc/init.d/tailscale" disable || true
 	"$TSLAN_ROOT/etc/init.d/tailscale" stop || true
-	for key in network.tslan firewall.tslan firewall.tslan_lan; do
+	for key in $(managed_sections); do
 		if [ "$(get "$key.tslan_managed")" = 1 ]; then uci delete "$key"; fi
 	done
 	uci commit network
@@ -205,6 +206,7 @@ uninstall() {
 	rm -f "$TSLAN_ROOT/etc/sysctl.d/99-tslan.conf"
 	"$TSLAN_ROOT/etc/init.d/network" reload
 	"$TSLAN_ROOT/etc/init.d/firewall" reload
+	remove_owned_tun
 	while IFS= read -r path; do rm -f "$TSLAN_ROOT/$path"; done < "$TSLAN_DATA/manifest"
 	rm -f "$TSLAN_ROOT/etc/config/tslan"
 	"$TSLAN_ROOT/etc/init.d/rpcd" restart
@@ -220,10 +222,11 @@ main() {
 	trap cleanup EXIT
 	trap 'exit 130' INT TERM
 	preflight
-	if [ "$MODE" = uninstall ]; then uninstall; exit 0; fi
 	extract_payload
+	if [ "$MODE" = uninstall ]; then uninstall; exit 0; fi
+	TSLAN_LIBDIR="$STAGE/payload/usr/lib/tslan"
 	# shellcheck source=files/usr/lib/tslan/common.sh
-	. "$STAGE/payload/usr/lib/tslan/common.sh"
+	. "$TSLAN_LIBDIR/common.sh"
 	LAN=${LAN_ARG:-$(get tslan.settings.lan_network)}
 	LAN=${LAN:-lan}
 	[ "$(get "network.$LAN")" = interface ] || die "LAN interface '$LAN' does not exist; use --lan-network NAME"
@@ -232,6 +235,7 @@ main() {
 	if [ -n "$(get tslan.settings)" ] && [ "$(get tslan.settings.managed)" != 1 ]; then
 		die "An unrelated /etc/config/tslan exists"
 	fi
+	check_ipv6_support
 	detect_pm
 	check_packages
 	if [ "$MODE" = check ]; then
@@ -296,7 +300,8 @@ main() {
 		die "Integration installed, but Tailscale startup failed. See /etc/tslan/startup.log"
 	fi
 	state=$(tailscale status --json 2>/dev/null | jsonfilter -e '@.BackendState' || true)
-	say "Backend state: ${state:-stopped}. Deployment does not prove LAN-to-peer connectivity."
+	say "Backend state: ${state:-stopped}. Local dual-stack checks do not prove peer service connectivity."
+	say "Router host: use the peer's 100.x IPv4 or fd7a:115c:a1e0:: IPv6 address."
 	say "Test from a LAN device using an allowed peer's 100.x address and service port."
 }
 

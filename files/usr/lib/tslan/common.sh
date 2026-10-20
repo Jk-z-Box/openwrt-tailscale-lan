@@ -5,6 +5,14 @@ TSLAN_DATA="$TSLAN_ROOT/etc/tslan"
 # Used by callers after sourcing this library.
 # shellcheck disable=SC2034
 TSLAN_RUN="$TSLAN_ROOT/var/run/tslan"
+TSLAN_LIBDIR=${TSLAN_LIBDIR:-"$TSLAN_ROOT/usr/lib/tslan"}
+# shellcheck source=files/usr/lib/tslan/host.sh
+. "$TSLAN_LIBDIR/host.sh"
+
+managed_sections() {
+	printf '%s\n' network.tslan network.tslan_device firewall.tslan firewall.tslan_lan \
+		firewall.tslan_icmp6 firewall.tslan_no_forward6_in firewall.tslan_no_forward6_out
+}
 
 say() { printf '%s\n' "$*"; }
 die() { say "ERROR: $*" >&2; exit 1; }
@@ -44,10 +52,15 @@ check_conflicts() {
 	for package in network firewall; do
 		[ -z "$(uci -q changes "$package")" ] || die "Unsaved UCI changes in $package; save/revert them first"
 	done
-	for key in network.tslan firewall.tslan firewall.tslan_lan; do
+	for key in $(managed_sections); do
 		if [ -n "$(get "$key")" ] && [ "$(get "$key.tslan_managed")" != 1 ]; then
 			die "Existing $key is not owned by this project; refusing to overwrite it"
 		fi
+	done
+	for section in $(sections network device); do
+		[ "$section" = tslan_device ] && continue
+		[ "$(get "network.$section.name")" != tailscale0 ] ||
+			die "Existing device section '$section' already configures tailscale0"
 	done
 	for section in $(sections network interface); do
 		[ "$section" = tslan ] && continue
@@ -82,28 +95,63 @@ snapshot() {
 
 configure_network() {
 	check_conflicts
+	check_ipv6_support
 	# Recreate only sections that are owned by this project.
-	for key in network.tslan firewall.tslan firewall.tslan_lan; do
+	for key in $(managed_sections); do
 		uci -q delete "$key" 2>/dev/null || true
 	done
 	uci set network.tslan=interface
 	uci set network.tslan.proto=none
 	uci set network.tslan.device=tailscale0
+	uci set network.tslan.force_link=1
 	uci set network.tslan.tslan_managed=1
+	uci set network.tslan_device=device
+	uci set network.tslan_device.name=tailscale0
+	uci set network.tslan_device.ipv6=1
+	uci set network.tslan_device.tslan_managed=1
 	uci set firewall.tslan=zone
 	uci set firewall.tslan.name=tslan
 	uci add_list firewall.tslan.network=tslan
-	uci set firewall.tslan.family=ipv4
+	uci add_list firewall.tslan.device=tailscale0
+	uci set firewall.tslan.family=any
 	uci set firewall.tslan.input=REJECT
 	uci set firewall.tslan.output=ACCEPT
 	uci set firewall.tslan.forward=REJECT
 	uci set firewall.tslan.masq=1
+	uci set firewall.tslan.masq6=0
 	uci set firewall.tslan.mtu_fix=1
 	uci set firewall.tslan.tslan_managed=1
 	uci set firewall.tslan_lan=forwarding
 	uci set "firewall.tslan_lan.src=$LAN_ZONE"
 	uci set firewall.tslan_lan.dest=tslan
+	uci set firewall.tslan_lan.family=ipv4
 	uci set firewall.tslan_lan.tslan_managed=1
+	uci set firewall.tslan_icmp6=rule
+	uci set firewall.tslan_icmp6.name=TSLAN-ICMPv6-errors
+	uci set firewall.tslan_icmp6.src=tslan
+	uci set firewall.tslan_icmp6.family=ipv6
+	uci set firewall.tslan_icmp6.proto=icmp
+	for icmp_type in destination-unreachable packet-too-big time-exceeded parameter-problem; do
+		uci add_list "firewall.tslan_icmp6.icmp_type=$icmp_type"
+	done
+	uci set firewall.tslan_icmp6.target=ACCEPT
+	uci set firewall.tslan_icmp6.tslan_managed=1
+	for direction in in out; do
+		key="firewall.tslan_no_forward6_$direction"
+		uci set "$key=rule"
+		uci set "$key.name=TSLAN-no-IPv6-forward-$direction"
+		uci set "$key.family=ipv6"
+		uci set "$key.proto=all"
+		uci set "$key.target=REJECT"
+		uci set "$key.tslan_managed=1"
+		if [ "$direction" = in ]; then
+			uci set "$key.src=*"
+			uci set "$key.dest=tslan"
+		else
+			uci set "$key.src=tslan"
+			uci set "$key.dest=*"
+		fi
+	done
 	uci commit network
 	uci commit firewall
 	# Validate before reloading the running firewall.
@@ -152,6 +200,10 @@ apply_preferences() {
 }
 
 start_client() {
+	# Restart even after an existing installation: the daemon caches IPv6
+	# capability, and netifd reload may have removed its previous addresses.
+	"$TSLAN_ROOT/etc/init.d/tailscale" stop
+	prepare_tun
 	"$TSLAN_ROOT/etc/init.d/tailscale" start
 	wait_daemon
 	apply_preferences
@@ -161,6 +213,7 @@ start_client() {
 		Running|NeedsLogin|NeedsMachineAuth|NoState|Starting) :;;
 		*) say "Tailscale backend state: $state";;
 	esac
+	verify_host_stack
 }
 
 write_report() {
@@ -173,12 +226,17 @@ write_report() {
 		cat "$TSLAN_DATA/packages-added" 2>/dev/null || true
 		printf '\n'
 		cat <<'REPORT'
-Managed interface: network.tslan, unmanaged, device tailscale0; no DHCP server.
-Managed firewall: firewall.tslan (IPv4); input REJECT, output ACCEPT, forward REJECT.
-Masquerading and MSS clamping are enabled on tslan.
-Managed forwarding: firewall.tslan_lan, selected LAN zone -> tslan.
+Managed interface: network.tslan, proto none, force_link=1, device tailscale0; no DHCP server.
+Managed device: network.tslan_device enables IPv6 only on tailscale0.
+Managed firewall: firewall.tslan (IPv4 + IPv6); input REJECT, output ACCEPT, forward REJECT.
+IPv4 masquerading and MSS clamping are enabled; IPv6 NAT is disabled.
+Managed forwarding: firewall.tslan_lan, IPv4 only, selected LAN zone -> tslan.
+Managed rules: tslan_icmp6 accepts essential ICMPv6 errors; tslan_no_forward6_in/out reject IPv6 forwarding through tailscale0.
 Return traffic uses the existing conntrack established/related rules.
 IPv4 forwarding: /etc/sysctl.d/99-tslan.conf sets net.ipv4.ip_forward=1.
+Runtime tailscale0 IPv6 settings: disable_ipv6=0, disable_policy=0, accept_ra=0, autoconf=0.
+The TUN is prepared before daemon startup and retained across stop/start; an owned TUN is deleted on uninstall.
+No global/default/physical-interface IPv6 sysctl is changed; IPv6 forwarding is not enabled.
 Tailscale preferences: netfilter-mode=off; OpenWrt manages this integration's firewall.
 LuCI: Services -> Tailscale; JS view, menu JSON, dedicated rpcd plugin and ACL.
 No WAN firewall allow rule, port forward, LAN DHCP/DNS rule, default route or subnet advertisement is added.
@@ -191,7 +249,9 @@ REPORT
 		printf 'Backup directory: %s\n' "$(cat "$TSLAN_DATA/latest-backup" 2>/dev/null || true)"
 		printf 'Default gateway requirement: LAN traffic for Tailscale must reach this OpenWrt router.\n'
 		printf 'Access targets by their 100.x IPv4 addresses; LAN MagicDNS is not configured.\n'
-		printf 'Scope: IPv4; local LAN devices share this router identity in Tailnet access policy.\n'
+		printf 'Scope: router host IPv4/IPv6 via tailscale0; LAN forwarding remains IPv4. LAN devices share this router identity.\n'
+		printf '\nHost validation at report generation:\n'
+		host_stack_status || true
 	} > "$TSLAN_DATA/report.txt"
 	chmod 600 "$TSLAN_DATA/report.txt"
 }

@@ -26,7 +26,17 @@ class Router:
         self.put("etc/opkg/distfeeds.conf", "src/gz packages https://example.invalid/release\n")
         self.put("etc/apk/repositories", "https://example.invalid/release\n")
         self.put("usr/share/libubox/jshn.sh", "# mocked runtime presence\n")
-        for command in ["uci", pm, "tailscale", "tailscaled", "jsonfilter", "sysctl", "fw4", "timeout", "ip", "sha256sum"]:
+        (self.root / "proc/sys/net/ipv6").mkdir(parents=True)
+        self.put("sysctl.json", json.dumps({
+            "net.ipv4.ip_forward": "0",
+            "net.ipv6.conf.all.disable_ipv6": "0",
+            "net.ipv6.conf.all.disable_policy": "0",
+            "net.ipv6.conf.all.forwarding": "0",
+            "net.ipv6.conf.default.disable_ipv6": "1",
+            "net.ipv6.conf.eth0.disable_ipv6": "1",
+            "net.ipv6.conf.br-lan.disable_ipv6": "1",
+        }))
+        for command in ["uci", pm, "tailscale", "tailscaled", "jsonfilter", "sysctl", "fw4", "timeout", "ip", "sha256sum", "ubus", "ifup", "sleep"]:
             self.command(self.bin / command, command)
         for service in ["network", "firewall", "rpcd", "uhttpd", "tailscale"]:
             self.command(self.root / "etc/init.d" / service, "daemon-init" if service == "tailscale" else service)
@@ -63,9 +73,15 @@ case "$1" in enable|disable) exit 0;; *) exit 0;; esac
         result = subprocess.run(["/bin/sh", str(REPO / "install.sh"), *args], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         return result
 
-    def control(self, action):
+    def control(self, action, extra=None):
         return subprocess.run(["/bin/sh", str(self.root / "usr/libexec/tslan-control"), action],
-                              env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                              env=dict(self.env, **(extra or {})), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    def running(self, peers=True):
+        self.put("tailscale.json", json.dumps({
+            "BackendState": "Running",
+            "Peer": {"one": {"TailscaleIPs": ["100.90.1.2", "fd7a:115c:a1e0::5678"]}} if peers else {}
+        }))
 
     def close(self):
         self.temp.cleanup()
@@ -88,7 +104,10 @@ class Integration(unittest.TestCase):
         self.assertEqual(fw["tslan"]["input"], "REJECT")
         self.assertEqual(fw["tslan_lan"]["src"], "home")
         self.assertEqual(fw["tslan_lan"]["dest"], "tslan")
-        self.assertEqual(len(fw), 4)
+        self.assertEqual(len(fw), 7)
+        self.assertEqual(fw["tslan"]["family"], "any")
+        self.assertEqual(fw["tslan"]["masq6"], "0")
+        self.assertEqual(fw["tslan_lan"]["family"], "ipv4")
         self.assertEqual(r.config("network")["lan"]["ipaddr"], "192.168.1.1")
         self.assertEqual(r.config("network")["tslan"]["device"], "tailscale0")
         self.assertEqual(json.loads((r.root / "prefs.json").read_text())["netfilter-mode"], "off")
@@ -202,6 +221,126 @@ class Integration(unittest.TestCase):
         self.assertEqual(r.config("firewall"), original)
         self.assertEqual((r.root / "etc/tailscale/tailscaled.state").read_text(), "private-test-state")
         self.assertFalse((r.root / "usr/libexec/tslan-control").exists())
+        self.assertFalse((r.root / "sys/class/net/tailscale0").exists())
+
+    def test_host_dualstack_preserves_physical_ipv6(self):
+        r = self.make()
+        r.running()
+        before = json.loads((r.root / "sysctl.json").read_text())
+        network = r.config("network")
+        self.success(r.run())
+        report = (r.root / "etc/tslan/report.txt").read_text()
+        self.assertIn("OK: IPv4", report)
+        self.assertIn("OK: IPv6", report)
+        self.assertEqual(r.config("network")["lan"], network["lan"])
+        after = json.loads((r.root / "sysctl.json").read_text())
+        for key, value in before.items():
+            if key.startswith("net.ipv6."):
+                self.assertEqual(after[key], value, key)
+        self.assertEqual(after["net.ipv6.conf.tailscale0.disable_ipv6"], "0")
+        self.assertEqual(after["net.ipv6.conf.tailscale0.accept_ra"], "0")
+        commands = [json.loads(line) for line in (r.root / "commands.log").read_text().splitlines()]
+        writes = [c[-1] for c in commands if c[:2] == ["sysctl", "-w"] and "ipv6" in c[-1]]
+        self.assertTrue(writes)
+        self.assertTrue(all(w.startswith("net.ipv6.conf.tailscale0.") for w in writes))
+        fw = r.config("firewall")
+        for direction in ["in", "out"]:
+            self.assertEqual(fw["tslan_no_forward6_" + direction]["family"], "ipv6")
+            self.assertEqual(fw["tslan_no_forward6_" + direction]["target"], "REJECT")
+        self.assertIn("packet-too-big", fw["tslan_icmp6"]["icmp_type"])
+
+    def test_global_ipv6_disabled_fails_before_packages_or_config(self):
+        r = self.make()
+        before = r.config("network")
+        knobs = json.loads((r.root / "sysctl.json").read_text())
+        knobs["net.ipv6.conf.all.disable_ipv6"] = "1"
+        r.put("sysctl.json", json.dumps(knobs))
+        result = r.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("global enable would affect physical interfaces", result.stdout)
+        self.assertEqual(r.config("network"), before)
+        self.assertEqual(json.loads((r.root / "sysctl.json").read_text()), knobs)
+        self.assertFalse((r.root / "packages.json").exists())
+
+    def test_missing_kernel_ipv6_fails_before_install(self):
+        r = self.make()
+        shutil.rmtree(r.root / "proc/sys/net/ipv6")
+        result = r.run("--check")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("IPv6 kernel support is unavailable", result.stdout)
+        self.assertFalse((r.root / "packages.json").exists())
+
+    def test_global_firewall_ipv6_disabled_is_rejected(self):
+        r = self.make()
+        fw = r.config("firewall")
+        fw["defaults"] = {"_type": "defaults", "disable_ipv6": "1"}
+        r.set_config("firewall", fw)
+        result = r.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("dual-stack firewall rules cannot be enforced", result.stdout)
+        self.assertEqual(r.config("firewall"), fw)
+
+    def test_missing_kernel_address_or_wrong_route_is_not_success(self):
+        for extra in [{"MISSING_V6_ADDRESS": "1"}, {"WRONG_ROUTE": "6"}, {"WRONG_ROUTE": "4"}]:
+            with self.subTest(extra=extra):
+                r = self.make()
+                r.running()
+                result = r.run(extra=extra)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Local IPv4/IPv6 validation failed", result.stdout)
+                self.assertTrue((r.root / "etc/tslan/startup.log").exists())
+
+    def test_no_peers_or_login_is_pending_not_verified(self):
+        for running in [True, False]:
+            with self.subTest(running=running):
+                r = self.make()
+                if running:
+                    r.running(peers=False)
+                self.success(r.run())
+                report = (r.root / "etc/tslan/report.txt").read_text()
+                self.assertIn("PENDING:", report)
+                self.assertNotIn("OK: IPv", report)
+
+    def test_boot_recreates_tun_and_restores_only_tun_ipv6(self):
+        r = self.make()
+        r.running()
+        self.success(r.run())
+        shutil.rmtree(r.root / "sys/class/net/tailscale0")
+        self.success(r.control("boot"))
+        self.assertIn("OK: IPv6", (r.root / "var/run/tslan/host-status").read_text())
+        knobs = json.loads((r.root / "sysctl.json").read_text())
+        self.assertEqual(knobs["net.ipv6.conf.default.disable_ipv6"], "1")
+        self.assertEqual(knobs["net.ipv6.conf.eth0.disable_ipv6"], "1")
+        self.success(r.control("apply"))
+        self.assertIn("OK: IPv6", (r.root / "var/run/tslan/host-status").read_text())
+
+    def test_upgrade_ipv4_zone_to_dualstack(self):
+        r = self.make()
+        r.running()
+        self.success(r.run())
+        fw = r.config("firewall")
+        fw["tslan"]["family"] = "ipv4"
+        fw["tslan_lan"].pop("family")
+        for key in ["tslan_icmp6", "tslan_no_forward6_in", "tslan_no_forward6_out"]:
+            fw.pop(key)
+        r.set_config("firewall", fw)
+        net = r.config("network")
+        net.pop("tslan_device")
+        r.set_config("network", net)
+        self.success(r.run())
+        self.assertEqual(r.config("firewall")["tslan_lan"]["family"], "ipv4")
+        self.assertEqual(r.config("firewall")["tslan"]["family"], "any")
+        self.assertIn("OK: IPv6", (r.root / "etc/tslan/report.txt").read_text())
+
+    def test_foreign_tun_device_configuration_is_preserved(self):
+        r = self.make()
+        network = r.config("network")
+        network["other"] = {"_type": "device", "name": "tailscale0", "ipv6": "0"}
+        r.set_config("network", network)
+        result = r.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("already configures tailscale0", result.stdout)
+        self.assertEqual(r.config("network"), network)
 
 
 if __name__ == "__main__":

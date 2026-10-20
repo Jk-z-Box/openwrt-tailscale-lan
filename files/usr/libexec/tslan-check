@@ -1,0 +1,6 @@
+#!/bin/sh
+# Read-only status; does not require UCI settings or the service operation lock.
+TSLAN_ROOT=${TSLAN_ROOT:-}
+# shellcheck source=files/usr/lib/tslan/common.sh
+. "$TSLAN_ROOT/usr/lib/tslan/common.sh"
+host_stack_status

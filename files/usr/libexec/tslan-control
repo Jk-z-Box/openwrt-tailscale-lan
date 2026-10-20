@@ -32,6 +32,18 @@ case "$ACTION" in
 		sysctl net.ipv4.ip_forward
 		ip -4 rule show
 		ip -4 route show table 52 || true
+		say '=== Local IPv4 / IPv6 addresses and effective peer routes ==='
+		host_stack_status || true
+		ip -4 addr show dev tailscale0 || true
+		ip -6 addr show dev tailscale0 || true
+		ip -6 rule show || true
+		ip -6 route show table 52 || true
+		say '=== IPv6 global/default and tailscale0 settings (read-only) ==='
+		for device in all default tailscale0; do
+			for option in disable_ipv6 disable_policy accept_ra autoconf forwarding; do
+				sysctl "net.ipv6.conf.$device.$option" 2>/dev/null || true
+			done
+		done
 		say '=== Managed configuration ==='
 		uci show network.tslan
 		uci show firewall.tslan
@@ -70,6 +82,7 @@ case "$ACTION" in
 			exit 0
 		fi
 		check_conflicts
+		check_ipv6_support
 		# Avoid flash writes, configuration rebuilds and network reloads at every boot.
 		if [ "$ACTION" != boot ]; then
 			snapshot
@@ -77,7 +90,6 @@ case "$ACTION" in
 			configure_network
 			NETWORK_TRANSACTION=0
 		fi
-		if [ "$ACTION" = restart ]; then "$TSLAN_ROOT/etc/init.d/tailscale" stop; fi
 		start_client
 		if [ "$ACTION" = login ]; then
 			state=$(tailscale status --json 2>/dev/null | jsonfilter -e '@.BackendState')
