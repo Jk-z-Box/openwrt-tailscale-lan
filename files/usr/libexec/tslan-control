@@ -1,0 +1,100 @@
+#!/bin/sh
+set -eu
+umask 077
+TSLAN_ROOT=${TSLAN_ROOT:-}
+# shellcheck source=files/usr/lib/tslan/common.sh
+. "$TSLAN_ROOT/usr/lib/tslan/common.sh"
+ACTION=${1:-}
+case "$ACTION" in start|stop|restart|apply|login|logout|boot|diagnose) :;; *) die "Usage: tslan-control start|stop|restart|apply|login|logout|diagnose";; esac
+mkdir -p "$TSLAN_RUN"
+if ! mkdir "$TSLAN_RUN/lock" 2>/dev/null; then die "Another Tailscale operation is running"; fi
+# Used by restore_network() from the shared library.
+# shellcheck disable=SC2034
+BACKUP=
+NETWORK_TRANSACTION=0
+finish() {
+	result=$?
+	trap - EXIT
+	if [ "$result" -ne 0 ] && [ "$NETWORK_TRANSACTION" = 1 ]; then restore_network; fi
+	printf '%s\n' "$result" > "$TSLAN_RUN/last-exit"
+	rm -rf "$TSLAN_RUN/lock"
+	exit "$result"
+}
+trap finish EXIT
+trap 'exit 130' INT TERM
+printf '%s\n' "$$" > "$TSLAN_RUN/lock/pid"
+load_settings
+case "$ACTION" in
+	diagnose)
+		say '=== Tailscale ==='
+		tailscale status || true
+		say '=== IPv4 forwarding / policy routes ==='
+		sysctl net.ipv4.ip_forward
+		ip -4 rule show
+		ip -4 route show table 52 || true
+		say '=== Managed configuration ==='
+		uci show network.tslan
+		uci show firewall.tslan
+		uci show firewall.tslan_lan
+		say '=== Note ==='
+		say 'Actual LAN -> peer reachability must be tested from a LAN device to an allowed peer service.'
+		;;
+	stop|logout)
+		if [ "$ACTION" = logout ]; then
+			"$TSLAN_ROOT/etc/init.d/tailscale" start
+			wait_daemon
+			tailscale logout
+		else
+			tailscale down 2>/dev/null || true
+		fi
+		uci set tslan.settings.enabled=0
+		uci commit tslan
+		ENABLED=0
+		"$TSLAN_ROOT/etc/init.d/tailscale" stop
+		"$TSLAN_ROOT/etc/init.d/tailscale" disable
+		write_report
+		;;
+	*)
+		if [ "$ACTION" = start ] || [ "$ACTION" = restart ] || [ "$ACTION" = login ]; then
+			ENABLED=1
+			uci set tslan.settings.enabled=1
+			uci commit tslan
+		fi
+		# A single init service owns startup; the packaged daemon init stays intact.
+		"$TSLAN_ROOT/etc/init.d/tailscale" disable
+		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan" enable
+		if [ "$ENABLED" = 0 ]; then
+			tailscale down 2>/dev/null || true
+			"$TSLAN_ROOT/etc/init.d/tailscale" stop
+			write_report
+			exit 0
+		fi
+		check_conflicts
+		# Avoid flash writes, configuration rebuilds and network reloads at every boot.
+		if [ "$ACTION" != boot ]; then
+			snapshot
+			NETWORK_TRANSACTION=1
+			configure_network
+			NETWORK_TRANSACTION=0
+		fi
+		if [ "$ACTION" = restart ]; then "$TSLAN_ROOT/etc/init.d/tailscale" stop; fi
+		start_client
+		if [ "$ACTION" = login ]; then
+			state=$(tailscale status --json 2>/dev/null | jsonfilter -e '@.BackendState')
+			case "$state" in
+				NeedsLogin|NoState)
+					# The auth URL remains visible in status after this bounded wait.
+					set -- --timeout=15s "--accept-dns=$([ "$ACCEPT_DNS" = 1 ] && echo true || echo false)" \
+						"--accept-routes=$([ "$ACCEPT_ROUTES" = 1 ] && echo true || echo false)" \
+						"--shields-up=$([ "$SHIELDS_UP" = 1 ] && echo true || echo false)" --netfilter-mode=off
+					[ -z "$HOSTNAME" ] || set -- "$@" "--hostname=$HOSTNAME"
+					tailscale up "$@" || {
+							url=$(tailscale status --json 2>/dev/null | jsonfilter -e '@.AuthURL')
+							[ -n "$url" ] || die "Could not obtain login URL; see operation log"
+						}
+					;;
+			esac
+		fi
+		[ "$ACTION" = boot ] || write_report
+		;;
+esac

@@ -1,0 +1,48 @@
+#!/bin/sh
+# jshn intentionally reads unset variables, so nounset is incompatible with it.
+set -e
+umask 077
+# shellcheck source=/dev/null
+. /usr/share/libubox/jshn.sh
+run=/var/run/tslan
+
+case "${1:-}" in
+	list)
+		printf '%s\n' '{"status":{},"report":{},"action":{"name":"string"}}'
+		;;
+	call)
+		case "${2:-}" in
+			status)
+				json_init
+				json_add_string tailscale "$(tailscale status --json 2>/dev/null || true)"
+				json_add_string version "$(tailscale version 2>/dev/null | head -n 1)"
+				json_add_string log "$(tail -c 12000 "$run/job.log" 2>/dev/null || true)"
+				json_add_string last_exit "$(cat "$run/last-exit" 2>/dev/null || true)"
+				json_add_boolean busy "$([ -d "$run/lock" ] && printf 1 || printf 0)"
+				json_dump
+				;;
+			report)
+				json_init
+				json_add_string report "$(cat /etc/tslan/report.txt 2>/dev/null || true)"
+				json_dump
+				;;
+			action)
+				IFS= read -r input || true
+				[ -n "${input:-}" ] || input='{}'
+				json_load "$input" || exit 1
+				json_get_var name name
+				case "${name:-}" in start|stop|restart|apply|login|logout|diagnose) :;; *) exit 1;; esac
+				mkdir -p "$run"
+				if [ -d "$run/lock" ]; then
+					printf '%s\n' '{"accepted":false,"error":"Another operation is running"}'
+					exit 0
+				fi
+				# Fixed executable and allowlisted argv. Never sh -c / eval user input.
+				/usr/libexec/tslan-control "$name" </dev/null >"$run/job.log" 2>&1 &
+				printf '%s\n' '{"accepted":true}'
+				;;
+			*) exit 1;;
+		esac
+		;;
+	*) exit 1;;
+esac

@@ -1,0 +1,13 @@
+{
+  "luci-app-tslan": {
+    "description": "Manage the Tailscale LAN integration",
+    "read": {
+      "ubus": { "tslan": ["status", "report"] },
+      "uci": ["tslan"]
+    },
+    "write": {
+      "ubus": { "tslan": ["action"] },
+      "uci": ["tslan"]
+    }
+  }
+}
