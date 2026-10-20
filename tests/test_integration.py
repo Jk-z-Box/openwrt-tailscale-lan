@@ -36,7 +36,7 @@ class Router:
             "net.ipv6.conf.eth0.disable_ipv6": "1",
             "net.ipv6.conf.br-lan.disable_ipv6": "1",
         }))
-        for command in ["uci", pm, "tailscale", "tailscaled", "jsonfilter", "sysctl", "fw4", "timeout", "ip", "sha256sum", "ubus", "ifup", "sleep"]:
+        for command in ["uci", pm, "tailscale", "tailscaled", "jsonfilter", "sysctl", "fw4", "timeout", "ip", "sha256sum", "ubus", "ifup", "sleep", "curl"]:
             self.command(self.bin / command, command)
         for service in ["network", "firewall", "rpcd", "uhttpd", "tailscale"]:
             self.command(self.root / "etc/init.d" / service, "daemon-init" if service == "tailscale" else service)
@@ -121,6 +121,31 @@ class Integration(unittest.TestCase):
         self.success(r.run())
         self.assertIn('"apk", "add"', (r.root / "commands.log").read_text())
         self.assertNotIn('"opkg"', (r.root / "commands.log").read_text())
+
+    def test_missing_busybox_timeout_is_installed(self):
+        r = self.make()
+        (r.bin / "timeout").unlink()
+        self.success(r.run())
+        self.assertIn("coreutils-timeout", json.loads((r.root / "packages.json").read_text()))
+        self.assertTrue((r.bin / "timeout").exists())
+
+    def test_legacy_tailscale_preserves_unmanaged_preferences(self):
+        r = self.make()
+        r.put("prefs.json", json.dumps({"exit-node": "100.70.1.1", "ssh": "true"}))
+        result = r.run(extra={"LEGACY_TAILSCALE": "1"})
+        self.success(result)
+        prefs = json.loads((r.root / "prefs.json").read_text())
+        self.assertEqual(prefs["exit-node"], "100.70.1.1")
+        self.assertEqual(prefs["ssh"], "true")
+        self.assertEqual(prefs["netfilter-mode"], "off")
+        self.assertNotIn("private-test-marker", result.stdout)
+        self.assertNotIn("private-test-marker", (r.root / "etc/tslan/startup.log").read_text())
+
+    def test_legacy_local_api_failure_is_reported(self):
+        r = self.make()
+        result = r.run(extra={"LEGACY_TAILSCALE": "1", "LOCALAPI_FAIL": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Could not set netfilter-mode=off", result.stdout)
 
     def test_preflight_does_not_install_or_change_config(self):
         r = self.make()

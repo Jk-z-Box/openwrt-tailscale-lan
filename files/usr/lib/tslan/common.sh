@@ -194,9 +194,23 @@ apply_preferences() {
 	set -- "--accept-dns=$([ "$ACCEPT_DNS" = 1 ] && printf true || printf false)"
 	set -- "$@" "--accept-routes=$([ "$ACCEPT_ROUTES" = 1 ] && printf true || printf false)"
 	set -- "$@" "--shields-up=$([ "$SHIELDS_UP" = 1 ] && printf true || printf false)"
-	set -- "$@" --netfilter-mode=off
 	[ -z "$HOSTNAME" ] || set -- "$@" "--hostname=$HOSTNAME"
-	tailscale set "$@"
+	if tailscale set --help 2>&1 | grep -q -- '--netfilter-mode'; then
+		tailscale set "$@" --netfilter-mode=off
+	else
+		tailscale set "$@"
+		# OpenWrt 23.05 supplies 1.58.2: "up" supports this preference but
+		# "set" does not. Use its local masked-prefs API to change just this
+		# field, preserving all unrelated options and avoiding "up --reset".
+		# Do not print/store the full prefs response, which may contain keys.
+		mode=$(curl --silent --show-error --fail --max-time 10 --noproxy '*' \
+			--unix-socket "$TSLAN_ROOT/var/run/tailscale/tailscaled.sock" \
+			-X PATCH -H 'Content-Type: application/json' \
+			-d '{"NetfilterMode":0,"NetfilterModeSet":true}' \
+			http://local-tailscaled.sock/localapi/v0/prefs |
+			jsonfilter -e '@.NetfilterMode' 2>/dev/null || true)
+		[ "$mode" = 0 ] || die "Could not set netfilter-mode=off using the local Tailscale socket"
+	fi
 }
 
 start_client() {

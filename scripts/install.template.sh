@@ -79,7 +79,7 @@ preflight() {
 		[0-9][0-9].*) major=${release%%.*}; [ "$major" -ge 23 ] || die "OpenWrt 23.05 or later is required";;
 		*) die "Unrecognized OpenWrt release: $release";;
 	esac
-	for cmd in uci ip sysctl tar gzip base64 sha256sum mktemp timeout ubus ifup; do
+	for cmd in uci ip sysctl tar gzip base64 sha256sum mktemp ubus ifup; do
 		command -v "$cmd" >/dev/null 2>&1 || die "Required command not found: $cmd"
 	done
 	[ -f "$TSLAN_ROOT/etc/config/network" ] && [ -f "$TSLAN_ROOT/etc/config/firewall" ] ||
@@ -132,12 +132,18 @@ check_packages() {
 	NEEDED=
 	# Modern tailscale packages include/provide tailscaled. Check the actual
 	# executable after installation and add the older split package if needed.
-	for package in tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter; do
+	for package in tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter curl; do
 		if ! installed "$package"; then
 			available "$package" || die "Package '$package' is unavailable for this firmware/architecture"
 			NEEDED="$NEEDED $package"
 		fi
 	done
+	# Stock OpenWrt 23.05 BusyBox may omit timeout. Install the command from
+	# the configured feed instead of rejecting an otherwise supported router.
+	if ! command -v timeout >/dev/null 2>&1; then
+		available coreutils-timeout || die "Package 'coreutils-timeout' is required but unavailable"
+		NEEDED="$NEEDED coreutils-timeout"
+	fi
 	say "Packages to install:${NEEDED:- (none)}"
 	if [ "$MODE" != check ] && [ -n "$NEEDED" ]; then
 		target="$TSLAN_ROOT/overlay"
@@ -161,11 +167,11 @@ install_packages() {
 		available tailscaled || die "tailscaled is missing and no split daemon package is available"
 		if [ "$PM" = apk ]; then apk add tailscaled; else opkg install tailscaled; fi
 	fi
-	for cmd in tailscale tailscaled jsonfilter; do command -v "$cmd" >/dev/null 2>&1 || die "Installation did not provide $cmd"; done
+	for cmd in tailscale tailscaled jsonfilter timeout curl; do command -v "$cmd" >/dev/null 2>&1 || die "Installation did not provide $cmd"; done
 	[ -x "$TSLAN_ROOT/etc/init.d/tailscale" ] || die "Packaged tailscale init script is missing"
 	[ -f "$TSLAN_ROOT/usr/share/libubox/jshn.sh" ] || die "jshn runtime is missing"
-	tailscale set --help 2>&1 | grep -q -- '--netfilter-mode' ||
-		die "This Tailscale version cannot set netfilter-mode; update firmware/package feeds"
+	tailscale up --help 2>&1 | grep -q -- '--netfilter-mode' ||
+		die "This Tailscale version does not support netfilter-mode"
 	if [ "$PM" = apk ]; then apk info; else opkg list-installed | awk '{print $1}'; fi | sort > "$STAGE/packages-after"
 	awk 'FILENAME == ARGV[1] { seen[$0]=1; next } !($0 in seen)' \
 		"$STAGE/packages-before" "$STAGE/packages-after" > "$TSLAN_DATA/packages-added-current"
@@ -257,6 +263,9 @@ main() {
 	TRANSACTION=1
 	install_payload
 	if [ "$(get tslan.settings.managed)" != 1 ]; then
+		# UCI cannot create a section in a package whose config file does
+		# not yet exist. Keep this inside the installation rollback window.
+		[ -f "$TSLAN_ROOT/etc/config/tslan" ] || : > "$TSLAN_ROOT/etc/config/tslan"
 		uci set tslan.settings=settings
 		uci set tslan.settings.managed=1
 		uci set tslan.settings.enabled=1

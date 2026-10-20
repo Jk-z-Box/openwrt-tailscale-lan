@@ -9,13 +9,13 @@ IPv6 用于本机访问对端的 `fd7a:115c:a1e0::/48` 地址，可通过现有 
 在 **OpenWrt 路由器的 SSH 终端**以 root 执行：
 
 ```sh
-wget -O /tmp/tslan-install.sh https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.1.0/install.sh && sh /tmp/tslan-install.sh
+wget -O /tmp/tslan-install.sh https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.1.1/install.sh && sh /tmp/tslan-install.sh
 ```
 
 也可以使用 curl：
 
 ```sh
-curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.1.0/install.sh -o /tmp/tslan-install.sh && sh /tmp/tslan-install.sh
+curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.1.1/install.sh -o /tmp/tslan-install.sh && sh /tmp/tslan-install.sh
 ```
 
 脚本包含全部管理页和后端文件，不需要从第三方软件源安装 LuCI 插件。安装期间的 Tailscale、LuCI 及依赖来自路由器已配置的软件源；脚本不替换软件源，不跨固件安装内核模块，不关闭软件包签名校验，也不执行全系统软件包升级。
@@ -33,14 +33,14 @@ curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.1.0
 
 - OpenWrt **23.05 及更新版本**，支持 `opkg` 或 `apk`，使用 BusyBox ash。
 - 至少 32 MiB 可写空闲空间（安装检查下限；实际需求取决于架构与已有组件），建议 128 MiB 以上内存。
-- 已配置的固件软件源可访问，并提供 `tailscale`、LuCI 和所需依赖。Tailscale 必须支持 `tailscale set --netfilter-mode`。
+- 已配置的固件软件源可访问，并提供 `tailscale`、LuCI 和所需依赖。兼容 OpenWrt 23.05.5 软件源中的 Tailscale 1.58.2；缺少 `timeout` 时自动安装 `coreutils-timeout`。
 - 内核支持 IPv6 与 IPv6 策略路由；`net.ipv6.conf.all.disable_ipv6=0`，全局防火墙未禁用 IPv6。允许 `default.disable_ipv6=1` 和物理接口单独禁用 IPv6：脚本仅开启 `tailscale0`。
 - LAN 设备到目标 `100.x` 地址的流量必须经过这台 OpenWrt。最常见情况是 OpenWrt 本身就是 LAN 默认网关。
 - 本机支持 Tailscale IPv4/IPv6，LAN 自动转发仅限 IPv4。LAN IPv6、远端主动访问本地 LAN、出口节点和 LAN MagicDNS 不在自动配置范围内。
 
 如果系统以 `ipv6.disable=1` 或 `net.ipv6.conf.all.disable_ipv6=1` 全局禁用了 IPv6，脚本会在安装软件和修改配置前停止。直接写全局开关会改变所有接口，因此本项目不会自动执行该操作；需先按当前固件恢复内核 IPv6 能力，并按接口保留 LAN/WAN 的限制。这个检查也会在开机启动时再次执行。
 
-本项目目前完成了状态化 OpenWrt 命令模拟测试、ShellCheck 和 LuCI 前端检查，**尚未在真实 OpenWrt 路由器上完成端到端验证**。详见 [测试记录](docs/TESTING.md)。
+已在 **OpenWrt 23.05.5 x86/64、Tailscale 1.58.2** 设备上验证本机双栈 HTTP、接入 LAN 桥的隔离客户端 IPv4 转发/NAT、重启自动恢复，以及原有网络配置保持一致。另有 25 项集成测试、ShellCheck 和 LuCI 前端检查。其他固件和架构仍需各自验收，详见 [测试记录](docs/TESTING.md)。
 
 如果 OpenWrt 是旁路由，需要在实际主路由上添加静态路由：
 
@@ -68,7 +68,9 @@ sh /tmp/tslan-install.sh
 
 项目独占 `network.tslan`、`network.tslan_device`、`firewall.tslan`、`firewall.tslan_lan`、`firewall.tslan_icmp6`、`firewall.tslan_no_forward6_in/out`，重复执行不会增加重复规则。若其他插件或手动配置已把 `tailscale0` 绑定到另一接口/设备配置/区域，脚本会停止并给出冲突对象；请先迁移旧配置。它不会删除其他插件来强行安装。
 
-从 v1.0.0 升级：执行上面的 v1.1.0 命令即可。原有服务选项和登录身份保留，托管防火墙区域升级为双栈，LAN 转发显式限定为 IPv4。升级和应用配置会重启 Tailscale，期间隧道连接会短暂中断。
+从 v1.0.0 / v1.1.0 升级：执行上面的 v1.1.1 命令即可。原有服务选项和登录身份保留，托管防火墙区域升级为双栈，LAN 转发显式限定为 IPv4。升级和应用配置会重启 Tailscale，期间隧道连接会短暂中断。
+
+v1.1.1 修复了实机发现的三项安装兼容问题：BusyBox 缺少 `timeout`、首次安装时 UCI 配置文件尚不存在，以及 Tailscale 1.58.2 的 `set` 子命令不支持 `--netfilter-mode`。对于最后一种情况，通过本机 Unix socket 的偏好接口仅修改 `NetfilterMode`，保留其他非托管选项；不会将完整偏好响应写入日志。
 
 ## LuCI 管理功能
 
@@ -86,7 +88,7 @@ sh /tmp/tslan-install.sh
 
 | 路径 / 对象 | 改动 |
 | --- | --- |
-| 软件包 | 按需安装 `tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter` 及其依赖；旧版可能追加 `tailscaled` |
+| 软件包 | 按需安装 `tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter curl` 及其依赖；缺少 `timeout` 时追加 `coreutils-timeout`，旧版可能追加 `tailscaled` |
 | `/etc/config/network` | 托管接口 `tslan`：协议 `none`、设备 `tailscale0`、`force_link=1`；托管设备 `tslan_device` 仅对 `tailscale0` 开启 IPv6 |
 | `/etc/config/firewall` | 托管区域 `tslan`：IPv4/IPv6、输入拒绝、输出允许、区域内转发拒绝，开启 IPv4 NAT 与 MSS 修正，关闭 NAT66 |
 | `/etc/config/firewall` | 托管转发 `tslan_lan`：仅 IPv4，选定 LAN 所属区域 → `tslan`；返回流量通过已有连接跟踪规则 |
@@ -137,14 +139,15 @@ sh /tmp/tslan-install.sh --uninstall
 
 卸载会停止 Tailscale、删除本项目的接口/设备/防火墙规则、管理页及自启动配置，并删除带有 `tslan-managed` 标记的持久 TUN；保留安装的软件包、`/etc/tailscale/` 登录身份和 `/etc/tslan/` 备份。卸载不会恢复整个旧配置文件，因此不会覆盖部署后新增的无关配置。IPv4 转发作为路由器基础能力保持现状。
 
-如之后独立使用 Tailscale，可执行：
+如之后独立使用 Tailscale，可启动原服务并按其 CLI 提示恢复原有选项：
 
 ```sh
 /etc/init.d/tailscale start
-tailscale set --netfilter-mode=on
-tailscale up
+tailscale up --netfilter-mode=on --accept-dns=false --accept-routes=false --shields-up=false
 /etc/init.d/tailscale enable
 ```
+
+上述选项对应本项目默认值；若曾启用其他选项，请补齐相应参数，避免改变原有意图。
 
 系统固件升级后请重新运行安装脚本，确保软件包和自定义 LuCI 文件都已恢复。
 

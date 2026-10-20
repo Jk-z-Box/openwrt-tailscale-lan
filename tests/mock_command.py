@@ -13,7 +13,7 @@ cfg = root / "etc/config"
 
 
 def read(path, default):
-    return json.loads(path.read_text()) if path.exists() else default
+    return json.loads(path.read_text()) if path.exists() and path.stat().st_size else default
 
 
 def write(path, obj):
@@ -42,6 +42,8 @@ if name == "uci":
         key, value = key.split("=", 1)
     parts = key.split(".")
     package = parts[0]
+    if cmd in ("set", "add_list") and not (cfg / package).exists():
+        sys.exit("uci: Entry not found")
     data = config(package)
     if cmd == "changes":
         if (cfg / (package + ".pending")).exists():
@@ -88,7 +90,7 @@ if name == "uci":
         raise ValueError(cmd)
 elif name in ("opkg", "apk"):
     installed = read(root / "packages.json", [])
-    available = ["tailscale", "tailscaled", "ip-full", "luci", "rpcd", "uhttpd", "uhttpd-mod-ubus", "jshn", "jsonfilter"]
+    available = ["tailscale", "tailscaled", "ip-full", "luci", "rpcd", "uhttpd", "uhttpd-mod-ubus", "jshn", "jsonfilter", "curl", "coreutils-timeout"]
     unavailable = os.environ.get("MISSING_PACKAGE")
     if unavailable in available:
         available.remove(unavailable)
@@ -119,17 +121,25 @@ elif name in ("opkg", "apk"):
             sys.exit(1)
         installed = sorted(set(installed + args[1:]))
         write(root / "packages.json", installed)
+        if "coreutils-timeout" in args[1:]:
+            executable = root / "bin/timeout"
+            executable.write_text("#!" + sys.executable + "\nimport subprocess,sys\nsys.exit(subprocess.call(sys.argv[2:]))\n")
+            executable.chmod(0o755)
     else:
         raise ValueError(args)
 elif name == "tailscale":
     state = read(root / "tailscale.json", {"BackendState": "NeedsLogin"})
     if args == ["set", "--help"]:
+        print("--accept-dns" if os.environ.get("LEGACY_TAILSCALE") else "--netfilter-mode string")
+    elif args == ["up", "--help"]:
         print("--netfilter-mode string")
     elif args[0] == "status":
         print(json.dumps(state) if "--json" in args else state["BackendState"])
     elif args[0] == "set":
         if os.environ.get("PREF_FAIL"):
             sys.exit(1)
+        if os.environ.get("LEGACY_TAILSCALE") and "--netfilter-mode=off" in args:
+            sys.exit("flag provided but not defined: -netfilter-mode")
         prefs = read(root / "prefs.json", {})
         for arg in args[1:]:
             k, v = arg[2:].split("=", 1)
@@ -171,6 +181,17 @@ elif name == "jsonfilter":
         value = value.get(part, "") if isinstance(value, dict) else ""
     if value != "":
         print(str(value).lower() if isinstance(value, bool) else value)
+elif name == "curl":
+    assert args[-1] == "http://local-tailscaled.sock/localapi/v0/prefs"
+    assert args[args.index("--unix-socket") + 1] == str(root / "var/run/tailscale/tailscaled.sock")
+    assert args[args.index("-X") + 1] == "PATCH"
+    assert json.loads(args[args.index("-d") + 1]) == {"NetfilterMode": 0, "NetfilterModeSet": True}
+    if os.environ.get("LOCALAPI_FAIL"):
+        sys.exit(22)
+    prefs = read(root / "prefs.json", {})
+    prefs["netfilter-mode"] = "off"
+    write(root / "prefs.json", prefs)
+    print('{"NetfilterMode":0,"Persist":{"PrivateNodeKey":"private-test-marker"}}')
 elif name == "sysctl":
     path = root / "sysctl.json"
     value = read(path, {"net.ipv4.ip_forward": "0"})
