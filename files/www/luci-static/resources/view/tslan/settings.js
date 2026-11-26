@@ -2,13 +2,63 @@
 'require view';
 'require form';
 'require rpc';
-'require uci';
 'require ui';
 'require poll';
 
 var getStatus = rpc.declare({ object: 'tslan', method: 'status', expect: {} });
 var getReport = rpc.declare({ object: 'tslan', method: 'report', expect: {} });
-var runAction = rpc.declare({ object: 'tslan', method: 'action', params: ['name'], expect: {} });
+var runAction = rpc.declare({ object: 'tslan', method: 'action', params: ['name', 'password', 'config'], expect: {} });
+
+var settingKeys = ['enabled', 'lan_network', 'hostname', 'accept_dns', 'accept_routes',
+	'shields_up', 'bypass_passwall2', 'lan_ipv4', 'lan_ipv6', 'web_visible'];
+
+function machineName(peer) {
+	// DNSName carries the control-plane machine name, including admin renames.
+	return (peer.DNSName || '').replace(/\.$/, '').split('.')[0] || peer.HostName || '—';
+}
+
+function copyIP(ip) {
+	function fallback() {
+		var field = E('textarea', { readonly: 'readonly', style: 'position:fixed;left:-9999px' });
+		field.value = ip;
+		document.body.appendChild(field);
+		try {
+			field.select(); field.setSelectionRange(0, ip.length);
+			if (!document.execCommand('copy')) throw new Error('浏览器未允许复制，请手动复制地址：' + ip);
+		} finally { field.remove(); }
+	}
+	var clipboard = window.navigator && window.navigator.clipboard;
+	var operation = clipboard && window.isSecureContext ?
+		clipboard.writeText(ip).catch(fallback) : Promise.resolve().then(fallback);
+	return operation.then(function() {
+		ui.addNotification(null, E('p', {}, '已复制：' + ip), 'info');
+	}).catch(function(error) { ui.addNotification(null, E('p', {}, error.message), 'error'); });
+}
+
+function addressCell(addresses, family) {
+	var ips = (addresses || []).filter(function(ip) { return (ip.indexOf(':') >= 0 ? 6 : 4) === family; });
+	if (!ips.length) return E('span', {}, '未分配');
+	return E('div', {}, ips.map(function(ip) {
+		return E('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, [
+			E('code', {}, ip), E('button', { type: 'button', 'class': 'cbi-button',
+				'aria-label': '复制 IPv' + family + ' ' + ip, click: function() { return copyIP(ip); } }, '复制 IPv' + family)
+		]);
+	}));
+}
+
+function requestPassword(required) {
+	if (!required) return Promise.resolve('');
+	return new Promise(function(resolve) {
+		var input = E('input', { type: 'password', autocomplete: 'current-password', maxlength: 128, 'aria-label': '管理密码' });
+		function finish(value) { input.value = ''; ui.hideModal(); resolve(value); }
+		ui.showModal('确认修改', [E('p', {}, '请输入 Tailscale 管理密码。'), input,
+			E('div', { 'class': 'right', style: 'margin-top:16px' }, [
+				E('button', { 'class': 'cbi-button', click: function() { finish(null); } }, '取消'),
+				E('button', { 'class': 'cbi-button cbi-button-positive', click: function() { finish(input.value); } }, '确认')
+			])]);
+		input.focus();
+	});
+}
 
 function parseStatus(result) {
 	try { return JSON.parse(result.tailscale || '{}'); }
@@ -24,7 +74,7 @@ function loginLink(url) {
 
 return view.extend({
 	load: function() {
-		return Promise.all([uci.load('tslan'), getStatus(), getReport()]);
+		return Promise.all([Promise.resolve(), getStatus(), getReport()]);
 	},
 
 	renderStatus: function(result) {
@@ -32,11 +82,12 @@ return view.extend({
 		var rows = [
 			['客户端版本', result.version || '不可用'],
 			['连接状态', st.BackendState || '服务未启动'],
-			['Tailscale 分配的 IPv4', (st.TailscaleIPs || []).filter(function(ip) { return ip.indexOf(':') < 0; }).join(', ') || '未分配'],
-			['Tailscale 分配的 IPv6', (st.TailscaleIPs || []).filter(function(ip) { return ip.indexOf(':') >= 0; }).join(', ') || '未分配'],
+			['Tailscale 分配的 IPv4', addressCell(st.TailscaleIPs || self.TailscaleIPs, 4)],
+			['Tailscale 分配的 IPv6', addressCell(st.TailscaleIPs || self.TailscaleIPs, 6)],
 			['本机双栈检查', E('pre', { style: 'white-space:pre-wrap;margin:0' }, result.host_stack || '等待检查；分配地址不代表内核路由已就绪。')],
 			['PassWall2 绕过状态', result.passwall2_bypass || '等待检查'],
-			['设备名称', self.HostName || '—'],
+			['Machine name', machineName(self)],
+			['管理密码', result.password_required ? '已启用，每次修改需确认' : '未启用；可运行 tslan passwd 设置'],
 			['操作状态', result.busy ? '执行中，请稍候…' :
 				(result.last_exit && result.last_exit !== '0' ? '上次操作失败，请查看下方日志' : '就绪')]
 		];
@@ -52,10 +103,16 @@ return view.extend({
 		]);
 	},
 
-	run: function(name) {
+	run: function(name, config) {
 		var self = this;
 		if (name === 'logout' && !window.confirm('注销当前 Tailscale 账户并停用服务？')) return Promise.resolve();
-		return runAction(name).then(function(result) {
+		return getStatus().then(function(status) {
+			return requestPassword(name !== 'diagnose' && status.password_required);
+		}).then(function(password) {
+			if (password === null) return null;
+			return runAction(name, password, JSON.stringify(config || {}));
+		}).then(function(result) {
+			if (result === null) return;
 			if (!result.accepted) throw new Error(result.error || '操作未接受');
 			ui.addNotification(null, E('p', {}, '操作已提交，结果会显示在状态和日志中。'), 'info');
 			// The next poll refreshes state. UCI edits stay in the form until reload.
@@ -78,8 +135,9 @@ return view.extend({
 			body.replaceChildren.apply(body, Object.keys(peers).map(function(key) {
 				var peer = peers[key];
 				return E('tr', { 'class': 'tr' }, [
-					E('td', { 'class': 'td' }, peer.HostName || peer.DNSName || '—'),
-					E('td', { 'class': 'td' }, (peer.TailscaleIPs || []).join(', ')),
+					E('td', { 'class': 'td' }, machineName(peer)),
+					E('td', { 'class': 'td' }, addressCell(peer.TailscaleIPs, 4)),
+					E('td', { 'class': 'td' }, addressCell(peer.TailscaleIPs, 6)),
 					E('td', { 'class': 'td' }, peer.Online ? '在线' : '离线')
 				]);
 			}));
@@ -88,12 +146,22 @@ return view.extend({
 
 	render: function(data) {
 		var self = this, option;
-		this.map = new form.Map('tslan', 'Tailscale', '本机通过 tailscale0 使用 Tailscale IPv4 / IPv6；LAN 设备继续通过本路由器访问 Tailscale IPv4。保留现有 LAN/WAN IPv6 设置，不开启 IPv6 转发和地址分发。');
+		this.map = new form.JSONMap({ settings: Object.assign({}, data[1].settings || {}) }, 'Tailscale', '本机通过 tailscale0 使用 IPv4 / IPv6。LAN 连通可按协议独立开关；不自动修改现有 LAN/WAN 的 IPv6 地址、RA 或 DHCPv6。')
+		this.map.readonly = false;
 		var section = this.map.section(form.NamedSection, 'settings', 'settings', '服务选项');
 		section.anonymous = true;
 		option = section.option(form.Flag, 'enabled', '启用 Tailscale');
 		option.default = '1'; option.rmempty = false;
 		option.description = '控制当前服务和开机启动；保存并应用后生效。';
+		option = section.option(form.Flag, 'lan_ipv4', 'LAN 连通 · IPv4');
+		option.default = '1'; option.rmempty = false;
+		option.description = '允许所选 LAN 区域的设备通过本路由器访问 Tailscale IPv4。关闭不影响路由器本机。';
+		option = section.option(form.Flag, 'lan_ipv6', 'LAN 连通 · IPv6');
+		option.default = '0'; option.rmempty = false;
+		option.description = '要求 LAN 已有 IPv6 地址、客户端路由经本机且系统已启用 IPv6 转发。仅在 tailscale0 出口启用 IPv6 NAT，不自动给 LAN 分配 IPv6。';
+		option = section.option(form.Flag, 'web_visible', '显示 Web 管理菜单');
+		option.default = '1'; option.rmempty = false;
+		option.description = '隐藏后可运行 tslan web on 恢复菜单；命令行和服务继续可用。';
 		option = section.option(form.Flag, 'bypass_passwall2', '绕过 PassWall2 代理（防止回环）');
 		option.default = '0'; option.rmempty = false;
 		option.description = '适用于 PassWall2 的 nftables 后端。让 Tailscale 外层连接、tailscale0 流量及 Tailnet IPv4/IPv6 目的地址绕过透明代理；其他流量按原策略处理。启用后每 3 秒检查规则，自动修复重载后丢失的规则，重载瞬间可能短暂中断。公网出口及基础 DNS 需能独立连通。';
@@ -109,7 +177,7 @@ return view.extend({
 		option.description = '授权其所属防火墙区域访问 Tailscale；同区域的其他网络也会获得访问权限。';
 		option = section.option(form.Flag, 'accept_routes', '接受远端子网路由');
 		option.default = '0'; option.rmempty = false;
-		option.description = '访问设备自身的 100.x / fd7a:115c:a1e0:: 地址无需开启。开启后接受已批准的远端子网路由，请注意与现有路由冲突；LAN 转发仍仅限 IPv4。';
+		option.description = '访问设备自身的 100.x / fd7a:115c:a1e0:: 地址无需开启。开启后接受已批准的远端子网路由，请注意与现有路由冲突；LAN 转发受各协议开关控制。';
 		option = section.option(form.Flag, 'accept_dns', '使用 Tailscale DNS');
 		option.default = '0'; option.rmempty = false;
 		option.description = '默认关闭。开启可能修改路由器 DNS；此选项不会自动为 LAN 配置 MagicDNS。';
@@ -130,7 +198,7 @@ return view.extend({
 				formNode,
 				E('h3', {}, 'Tailnet 设备'),
 				E('table', { 'class': 'table' }, [
-					E('thead', {}, E('tr', { 'class': 'tr' }, ['设备', 'Tailscale IP', '状态'].map(function(t) { return E('th', { 'class': 'th' }, t); }))),
+					E('thead', {}, E('tr', { 'class': 'tr' }, ['Machine name', 'Tailscale IPv4', 'Tailscale IPv6', '状态'].map(function(t) { return E('th', { 'class': 'th' }, t); }))),
 					E('tbody', { id: 'tslan-peers' })
 				]),
 				E('details', {}, [E('summary', {}, '操作日志'), E('pre', { id: 'tslan-log', style: 'white-space:pre-wrap' }, data[1].log || '暂无操作日志。')]),
@@ -143,10 +211,11 @@ return view.extend({
 
 	handleSaveApply: function() {
 		var self = this;
-		return this.map.save().then(function() { return uci.save(); })
-			.then(function() { return uci.apply(); })
-			.then(function() { return self.run('apply'); })
-			.catch(function(error) { ui.addNotification(null, E('p', {}, error.message), 'error'); });
+		return this.map.save().then(function() {
+			var config = {};
+			settingKeys.forEach(function(key) { config[key] = self.map.data.get('json', 'settings', key) || ''; });
+			return self.run('set', config);
+		}).catch(function(error) { ui.addNotification(null, E('p', {}, error.message), 'error'); });
 	},
 	handleSave: null,
 	handleReset: function() { window.location.reload(); }

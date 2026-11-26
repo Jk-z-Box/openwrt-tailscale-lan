@@ -90,7 +90,7 @@ if name == "uci":
         raise ValueError(cmd)
 elif name in ("opkg", "apk"):
     installed = read(root / "packages.json", [])
-    available = ["tailscale", "tailscaled", "ip-full", "luci", "rpcd", "uhttpd", "uhttpd-mod-ubus", "jshn", "jsonfilter", "curl", "coreutils-timeout"]
+    available = ["tailscale", "tailscaled", "ip-full", "luci", "rpcd", "uhttpd", "uhttpd-mod-ubus", "jshn", "jsonfilter", "curl", "coreutils-timeout", "openssl-util"]
     unavailable = os.environ.get("MISSING_PACKAGE")
     if unavailable in available:
         available.remove(unavailable)
@@ -232,7 +232,7 @@ elif name == "daemon-init":
 elif name == "ifup":
     pass
 elif name == "ubus":
-    print(json.dumps({"up": not os.environ.get("IFUP_FAIL")}))
+    print(json.dumps({"up": not os.environ.get("IFUP_FAIL"), "l3_device": "br-lan"}))
 elif name == "sleep":
     pass  # Bounded retry tests do not need wall-clock delays.
 elif name == "ip":
@@ -254,7 +254,9 @@ elif name == "ip":
         shutil.rmtree(device)
     elif "addr" in args:
         family = args[0][1:]
-        if read(root / "addresses.json", {}).get(family):
+        if "br-lan" in args and os.environ.get("LAN_IPV6_READY"):
+            print("2: br-lan inet6 fd12:3456:789a::1/64 scope global")
+        elif "tailscale0" in args and read(root / "addresses.json", {}).get(family):
             proto, address = ("inet", "100.80.1.2/32") if family == "4" else ("inet6", "fd7a:115c:a1e0::1234/128")
             print(f"6: tailscale0    {proto} {address} scope global tailscale0")
     elif "route" in args and "get" in args:

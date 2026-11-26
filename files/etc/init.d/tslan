@@ -22,5 +22,5 @@ stop_service() {
 }
 
 reload_service() {
-	/usr/libexec/tslan-control apply
+	/usr/libexec/tslan-control boot
 }

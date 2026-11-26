@@ -104,7 +104,7 @@ class Integration(unittest.TestCase):
         self.assertEqual(fw["tslan"]["input"], "REJECT")
         self.assertEqual(fw["tslan_lan"]["src"], "home")
         self.assertEqual(fw["tslan_lan"]["dest"], "tslan")
-        self.assertEqual(len(fw), 7)
+        self.assertEqual(len(fw), 8)
         self.assertEqual(fw["tslan"]["family"], "any")
         self.assertEqual(fw["tslan"]["masq6"], "0")
         self.assertEqual(fw["tslan_lan"]["family"], "ipv4")

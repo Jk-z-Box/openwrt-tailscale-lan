@@ -8,10 +8,12 @@ TSLAN_RUN="$TSLAN_ROOT/var/run/tslan"
 TSLAN_LIBDIR=${TSLAN_LIBDIR:-"$TSLAN_ROOT/usr/lib/tslan"}
 # shellcheck source=files/usr/lib/tslan/host.sh
 . "$TSLAN_LIBDIR/host.sh"
+# shellcheck source=files/usr/lib/tslan/auth.sh
+. "$TSLAN_LIBDIR/auth.sh"
 
 managed_sections() {
 	printf '%s\n' network.tslan network.tslan_device firewall.tslan firewall.tslan_lan \
-		firewall.tslan_icmp6 firewall.tslan_no_forward6_in firewall.tslan_no_forward6_out
+		firewall.tslan_icmp6 firewall.tslan_no_forward6_in firewall.tslan_no_forward6_out firewall.tslan_lan6 firewall.tslan_gate
 }
 
 say() { printf '%s\n' "$*"; }
@@ -31,7 +33,10 @@ load_settings() {
 	SHIELDS_UP=$(get tslan.settings.shields_up)
 	BYPASS_PASSWALL2=$(get tslan.settings.bypass_passwall2)
 	BYPASS_PASSWALL2=${BYPASS_PASSWALL2:-0}
-	for value in "$ENABLED" "$ACCEPT_DNS" "$ACCEPT_ROUTES" "$SHIELDS_UP" "$BYPASS_PASSWALL2"; do
+	LAN4=$(get tslan.settings.lan_ipv4); LAN4=${LAN4:-1}
+	LAN6=$(get tslan.settings.lan_ipv6); LAN6=${LAN6:-0}
+	WEB_VISIBLE=$(get tslan.settings.web_visible); WEB_VISIBLE=${WEB_VISIBLE:-1}
+	for value in "$ENABLED" "$ACCEPT_DNS" "$ACCEPT_ROUTES" "$SHIELDS_UP" "$BYPASS_PASSWALL2" "$LAN4" "$LAN6" "$WEB_VISIBLE"; do
 		bool "$value" || die "Invalid boolean in /etc/config/tslan"
 	done
 	identifier "$LAN" || die "Invalid LAN interface name"
@@ -92,12 +97,22 @@ snapshot() {
 			: > "$BACKUP/$name.absent"
 		fi
 	done
+	if [ -f "$TSLAN_DATA/forward.nft" ]; then cp -p "$TSLAN_DATA/forward.nft" "$BACKUP/forward.nft"; fi
 	printf '%s\n' "$BACKUP" > "$TSLAN_DATA/latest-backup"
 }
 
 configure_network() {
 	check_conflicts
 	check_ipv6_support
+	command -v fw4 >/dev/null 2>&1 || die 'LAN switches require firewall4 (standard OpenWrt 23.05+ backend)'
+	if [ "$LAN6" = 1 ]; then
+		[ "$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null)" = 1 ] ||
+			die 'LAN IPv6 requires existing IPv6 forwarding. Global settings are preserved; configure IPv6 routing explicitly first.'
+		lan_device=$(ubus call "network.interface.$LAN" status | jsonfilter -e '@.l3_device')
+		case "$lan_device" in ''|*[!a-zA-Z0-9_.:-]*) die 'Cannot determine LAN device for IPv6 validation';; esac
+		ip -6 addr show dev "$lan_device" scope global | grep -q 'inet6 ' ||
+			die 'LAN IPv6 requires an existing ULA/global IPv6 address and client route via OpenWrt; RA/DHCPv6 is not enabled automatically.'
+	fi
 	# Recreate only sections that are owned by this project.
 	for key in $(managed_sections); do
 		uci -q delete "$key" 2>/dev/null || true
@@ -120,14 +135,41 @@ configure_network() {
 	uci set firewall.tslan.output=ACCEPT
 	uci set firewall.tslan.forward=REJECT
 	uci set firewall.tslan.masq=1
-	uci set firewall.tslan.masq6=0
+	uci set "firewall.tslan.masq6=$LAN6"
 	uci set firewall.tslan.mtu_fix=1
 	uci set firewall.tslan.tslan_managed=1
+	if [ "$LAN4" = 1 ]; then
 	uci set firewall.tslan_lan=forwarding
 	uci set "firewall.tslan_lan.src=$LAN_ZONE"
 	uci set firewall.tslan_lan.dest=tslan
 	uci set firewall.tslan_lan.family=ipv4
 	uci set firewall.tslan_lan.tslan_managed=1
+	fi
+	if [ "$LAN6" = 1 ]; then
+		uci set firewall.tslan_lan6=forwarding
+		uci set "firewall.tslan_lan6.src=$LAN_ZONE"
+		uci set firewall.tslan_lan6.dest=tslan
+		uci set firewall.tslan_lan6.family=ipv6
+		uci set firewall.tslan_lan6.tslan_managed=1
+	fi
+	# This prepend executes before fw4 established/related and flow offload rules.
+	# Reloading fw4 also recreates its flowtable, evicting offloaded connections.
+	mkdir -p "$TSLAN_DATA"
+	{
+		for family in 4 6; do
+			case "$family" in 4) allowed=$LAN4; proto=ipv4;; 6) allowed=$LAN6; proto=ipv6;; esac
+			if [ "$allowed" = 0 ]; then
+				printf 'oifname "tailscale0" meta nfproto %s counter drop comment "tslan LAN disabled"\n' "$proto"
+				printf 'iifname "tailscale0" meta nfproto %s counter drop comment "tslan LAN disabled"\n' "$proto"
+			fi
+		done
+	} > "$TSLAN_DATA/forward.nft"
+	uci set firewall.tslan_gate=include
+	uci set firewall.tslan_gate.type=nftables
+	uci set "firewall.tslan_gate.path=$TSLAN_DATA/forward.nft"
+	uci set firewall.tslan_gate.position=chain-prepend
+	uci set firewall.tslan_gate.chain=forward
+	uci set firewall.tslan_gate.tslan_managed=1
 	uci set firewall.tslan_icmp6=rule
 	uci set firewall.tslan_icmp6.name=TSLAN-ICMPv6-errors
 	uci set firewall.tslan_icmp6.src=tslan
@@ -139,6 +181,7 @@ configure_network() {
 	uci set firewall.tslan_icmp6.target=ACCEPT
 	uci set firewall.tslan_icmp6.tslan_managed=1
 	for direction in in out; do
+		[ "$LAN6" = 0 ] || [ "$direction" = out ] || continue
 		key="firewall.tslan_no_forward6_$direction"
 		uci set "$key=rule"
 		uci set "$key.name=TSLAN-no-IPv6-forward-$direction"
@@ -173,6 +216,7 @@ configure_network() {
 
 restore_network() {
 	[ -n "${BACKUP:-}" ] && [ -d "$BACKUP" ] || return 0
+	if [ -f "$BACKUP/forward.nft" ]; then cp -p "$BACKUP/forward.nft" "$TSLAN_DATA/forward.nft"; else rm -f "$TSLAN_DATA/forward.nft"; fi
 	for name in network firewall; do
 		uci -q revert "$name" 2>/dev/null || true
 		[ ! -f "$BACKUP/$name" ] || cp -p "$BACKUP/$name" "$TSLAN_ROOT/etc/config/$name"
@@ -260,22 +304,27 @@ write_report() {
 Managed interface: network.tslan, proto none, force_link=1, device tailscale0; no DHCP server.
 Managed device: network.tslan_device enables IPv6 only on tailscale0.
 Managed firewall: firewall.tslan (IPv4 + IPv6); input REJECT, output ACCEPT, forward REJECT.
-IPv4 masquerading and MSS clamping are enabled; IPv6 NAT is disabled.
-Managed forwarding: firewall.tslan_lan, IPv4 only, selected LAN zone -> tslan.
-Managed rules: tslan_icmp6 accepts essential ICMPv6 errors; tslan_no_forward6_in/out reject IPv6 forwarding through tailscale0.
+IPv4 masquerading and MSS clamping are enabled. IPv6 NAT is enabled only with LAN IPv6.
+Managed forwarding: tslan_lan / tslan_lan6 independently allow the selected LAN zone -> tslan.
+Managed include: tslan_gate + /etc/tslan/forward.nft block disabled families before established/related in fw4 forward.
+Managed rules: tslan_icmp6 accepts essential ICMPv6 errors; tslan_no_forward6_out rejects unsolicited reverse forwarding; the inbound block exists when LAN IPv6 is disabled.
 Return traffic uses the existing conntrack established/related rules.
 IPv4 forwarding: /etc/sysctl.d/99-tslan.conf sets net.ipv4.ip_forward=1.
 Runtime tailscale0 IPv6 settings: disable_ipv6=0, disable_policy=0, accept_ra=0, autoconf=0.
 The TUN is prepared before daemon startup and retained across stop/start; an owned TUN is deleted on uninstall.
 No global/default/physical-interface IPv6 sysctl is changed; IPv6 forwarding is not enabled.
 Tailscale preferences: netfilter-mode=off; OpenWrt manages this integration's firewall.
-LuCI: Services -> Tailscale; JS view, menu JSON, dedicated rpcd plugin and ACL.
+LuCI: Services -> Tailscale when visible; JS view, menu template, dedicated rpcd plugin and ACL.
+CLI: /usr/sbin/tslan provides menu, status, service/configuration switches and uninstall.
+Optional auth: /etc/tslan/password stores salted PBKDF2 only; manual management writes require confirmation.
+Automatic boot/recovery uses saved settings; this does not restrict root access.
 No WAN firewall allow rule, port forward, LAN DHCP/DNS rule, default route or subnet advertisement is added.
 The source firewall zone covers all networks assigned to that zone.
 Nondefault existing Tailscale options not managed by this page remain in Tailscale state.
 REPORT
 		printf 'Preferences: enabled=%s, accept-dns=%s, accept-routes=%s, shields-up=%s, hostname=%s\n' \
 			"$ENABLED" "$ACCEPT_DNS" "$ACCEPT_ROUTES" "$SHIELDS_UP" "${HOSTNAME:-(unchanged)}"
+		printf 'LAN connectivity: IPv4=%s, IPv6=%s; LuCI menu visible=%s; management password=%s\n' "$LAN4" "$LAN6" "$WEB_VISIBLE" "$(auth_enabled && printf enabled || printf disabled)"
 		printf 'PassWall2 bypass option: %s (default off; nftables backend).\n' "$BYPASS_PASSWALL2"
 		printf 'When enabled, labelled RETURN rules in PassWall2 output/prerouting bypass Tailscale outer marks, tailscale0 and Tailnet destinations. No marks or PassWall2 config files are rewritten.\n'
 		printf 'A procd guard checks every 3 seconds and restores rules after PassWall2/firewall reload; a brief reload window can occur.\n'
@@ -284,9 +333,21 @@ REPORT
 		printf 'Backup directory: %s\n' "$(cat "$TSLAN_DATA/latest-backup" 2>/dev/null || true)"
 		printf 'Default gateway requirement: LAN traffic for Tailscale must reach this OpenWrt router.\n'
 		printf 'Access targets by their 100.x IPv4 addresses; LAN MagicDNS is not configured.\n'
-		printf 'Scope: router host IPv4/IPv6 via tailscale0; LAN forwarding remains IPv4. LAN devices share this router identity.\n'
+		printf 'Scope: router host IPv4/IPv6 via tailscale0; LAN forwarding follows independent family switches. LAN devices share this router identity.\n'
 		printf '\nHost validation at report generation:\n'
 		host_stack_status || true
 	} > "$TSLAN_DATA/report.txt"
 	chmod 600 "$TSLAN_DATA/report.txt"
+}
+
+configure_web() {
+	menu="$TSLAN_ROOT/usr/share/luci/menu.d/luci-app-tslan.json"
+	if [ "$WEB_VISIBLE" = 1 ]; then
+		cp "$TSLAN_ROOT/usr/share/tslan/menu.json" "$menu"
+		chmod 644 "$menu"
+	else
+		rm -f "$menu"
+	fi
+	rm -f "$TSLAN_ROOT/tmp/luci-indexcache"
+	rm -rf "$TSLAN_ROOT/tmp/luci-modulecache"
 }

@@ -1,0 +1,8 @@
+{
+  "admin/services/tslan": {
+    "title": "Tailscale",
+    "order": 60,
+    "action": { "type": "view", "path": "tslan/settings" },
+    "depends": { "acl": ["luci-app-tslan"], "uci": { "tslan": true } }
+  }
+}

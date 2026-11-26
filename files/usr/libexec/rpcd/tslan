@@ -1,50 +1,79 @@
 #!/bin/sh
-# jshn intentionally reads unset variables, so nounset is incompatible with it.
+# jshn intentionally reads unset variables; do not use nounset here.
 set -e
 umask 077
+TSLAN_ROOT=${TSLAN_ROOT:-}
 # shellcheck source=/dev/null
-. /usr/share/libubox/jshn.sh
-run=/var/run/tslan
-
+. "$TSLAN_ROOT/usr/share/libubox/jshn.sh"
+# shellcheck source=files/usr/lib/tslan/common.sh
+. "$TSLAN_ROOT/usr/lib/tslan/common.sh"
+run=$TSLAN_RUN
+keys='enabled lan_network hostname accept_dns accept_routes shields_up bypass_passwall2 lan_ipv4 lan_ipv6 web_visible'
+error() { json_init; json_add_boolean accepted 0; json_add_string error "$1"; json_dump; }
 case "${1:-}" in
-	list)
-		printf '%s\n' '{"status":{},"report":{},"action":{"name":"string"}}'
-		;;
-	call)
-		case "${2:-}" in
-			status)
-				json_init
-				json_add_string tailscale "$(tailscale status --json 2>/dev/null || true)"
-				json_add_string version "$(tailscale version 2>/dev/null | head -n 1)"
-				json_add_string host_stack "$(/usr/libexec/tslan-check 2>/dev/null || true)"
-				json_add_string passwall2_bypass "$(/usr/libexec/tslan-passwall2 status 2>/dev/null || true)"
-				json_add_string log "$(tail -c 12000 "$run/job.log" 2>/dev/null || true)"
-				json_add_string last_exit "$(cat "$run/last-exit" 2>/dev/null || true)"
-				json_add_boolean busy "$([ -d "$run/lock" ] && printf 1 || printf 0)"
-				json_dump
-				;;
-			report)
-				json_init
-				json_add_string report "$(cat /etc/tslan/report.txt 2>/dev/null || true)"
-				json_dump
-				;;
-			action)
-				IFS= read -r input || true
-				[ -n "${input:-}" ] || input='{}'
-				json_load "$input" || exit 1
-				json_get_var name name
-				case "${name:-}" in start|stop|restart|apply|login|logout|diagnose) :;; *) exit 1;; esac
-				mkdir -p "$run"
-				if [ -d "$run/lock" ]; then
-					printf '%s\n' '{"accepted":false,"error":"Another operation is running"}'
-					exit 0
-				fi
-				# Fixed executable and allowlisted argv. Never sh -c / eval user input.
-				/usr/libexec/tslan-control "$name" </dev/null >"$run/job.log" 2>&1 &
-				printf '%s\n' '{"accepted":true}'
-				;;
-			*) exit 1;;
-		esac
-		;;
-	*) exit 1;;
+ list) printf '%s\n' '{"status":{},"report":{},"action":{"name":"string","password":"string","config":"string"}}';;
+ call)
+  case "${2:-}" in
+   status)
+    json_init
+    json_add_string tailscale "$(tailscale status --json 2>/dev/null || true)"
+    json_add_string version "$(tailscale version 2>/dev/null | head -n 1)"
+    json_add_string host_stack "$("$TSLAN_ROOT/usr/libexec/tslan-check" 2>/dev/null || true)"
+    json_add_string passwall2_bypass "$("$TSLAN_ROOT/usr/libexec/tslan-passwall2" status 2>/dev/null || true)"
+    json_add_string log "$(tail -c 12000 "$run/job.log" 2>/dev/null || true)"
+    json_add_string last_exit "$(cat "$run/last-exit" 2>/dev/null || true)"
+    json_add_boolean busy "$([ -d "$run/lock" ] && printf 1 || printf 0)"
+    json_add_boolean password_required "$(auth_enabled && printf 1 || printf 0)"
+    json_add_object settings
+    for key in $keys; do
+     value=$(get "tslan.settings.$key")
+     case "$key" in lan_ipv4|web_visible) value=${value:-1};; lan_ipv6) value=${value:-0};; esac
+     json_add_string "$key" "$value"
+    done
+    json_close_object
+    json_dump;;
+   report)
+    json_init; json_add_string report "$(cat "$TSLAN_DATA/report.txt" 2>/dev/null || true)"; json_dump;;
+   action)
+    IFS= read -r input || true
+    [ "${#input}" -le 8192 ] || { error 'Request too large'; exit 0; }
+    [ -n "$input" ] || input='{}'
+    # jshn -r would expose the request (including the password) in argv.
+    # Use its file reader with a private stdin instead.
+    json_load_file /proc/self/fd/0 2>/dev/null <<TSLAN_RPC_INPUT
+$input
+TSLAN_RPC_INPUT
+    json_get_var name name || name=
+    AUTH_PASSWORD=$(secret_input=; json_get_var secret_input password || true; printf '%s' "$secret_input")
+    json_get_var config config || config=
+    json_cleanup
+    unset input
+    case "$name" in start|stop|restart|apply|login|logout|diagnose|set) :;; *) error 'Unsupported action'; exit 0;; esac
+    mkdir -p "$run"
+    if [ -d "$run/lock" ]; then error 'Another operation is running'; exit 0; fi
+    if [ "$name" != diagnose ]; then
+     if ! auth_verify 2>/dev/null; then error '管理密码错误或尝试过快，请稍后重试'; exit 0; fi
+    fi
+    unset AUTH_PASSWORD
+    set --
+    if [ "$name" = set ]; then
+     json_load "$config" || { error 'Invalid settings'; exit 0; }
+     names=; kind=
+     json_get_keys names
+     for key in $names; do
+      case " $keys " in *" $key "*) :;; *) error 'Unknown setting'; exit 0;; esac
+      json_get_type kind "$key"
+      [ "$kind" = string ] || { error 'Expected string settings'; exit 0; }
+      json_get_var value "$key"
+      set -- "$@" "$key=$value"
+     done
+    fi
+    if [ "$name" = diagnose ]; then set -- "$name"; else set -- "$name" --ticket "$(auth_ticket)" "$@"; fi
+    # No password is persisted or passed in argv. One-use ticket is root-only,
+    # short-lived, and cannot be supplied by an RPC caller.
+    "$TSLAN_ROOT/usr/libexec/tslan-control" "$@" </dev/null >"$run/job.log" 2>&1 &
+    printf '%s\n' '{"accepted":true}';;
+   *) exit 1;;
+  esac;;
+ *) exit 1;;
 esac

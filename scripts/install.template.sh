@@ -5,6 +5,9 @@ umask 077
 export LC_ALL=C
 TSLAN_ROOT=${TSLAN_ROOT:-}
 MODE=install
+WEB_ARG=
+PASSWORD_ARG=
+NONINTERACTIVE=0
 LAN_ARG=
 STAGE=
 BACKUP=
@@ -17,6 +20,9 @@ usage() {
 OpenWrt Tailscale LAN installer
   sh install.sh                        Install/update; default LAN is lan
   sh install.sh --lan-network NAME     Select an existing LAN logical interface
+  sh install.sh --web on|off           Show/hide Services -> Tailscale
+  sh install.sh --password on|off      Set/change or disable management password
+  sh install.sh --non-interactive      Preserve existing choices; new defaults: Web on, password off
   sh install.sh --check                Check system, feeds and available packages
   sh install.sh --uninstall            Remove integration; retain Tailscale identity and packages
   sh install.sh --help
@@ -28,12 +34,17 @@ parse_args() {
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 			--lan-network) [ "$#" -ge 2 ] || die "--lan-network needs a value"; LAN_ARG=$2; shift 2;;
+			--web) [ "$#" -ge 2 ] || die '--web needs on/off'; WEB_ARG=$2; shift 2;;
+			--password) [ "$#" -ge 2 ] || die '--password needs on/off'; PASSWORD_ARG=$2; shift 2;;
+			--non-interactive) NONINTERACTIVE=1; shift;;
 			--check) MODE=check; shift;;
 			--uninstall) MODE=uninstall; shift;;
 			--help|-h) usage; exit 0;;
 			*) die "Unknown option: $1";;
 		esac
 	done
+	case "$WEB_ARG" in ''|on|off) :;; *) die '--web needs on/off';; esac
+	case "$PASSWORD_ARG" in ''|on|off) :;; *) die '--password needs on/off';; esac
 	case "$LAN_ARG" in *[!a-zA-Z0-9_]*) die "Invalid LAN interface name";; esac
 }
 
@@ -65,6 +76,7 @@ cleanup() {
 		sysctl -w "net.ipv4.ip_forward=$(cat "$BACKUP/ip_forward")" >/dev/null 2>&1 || true
 		say "Packages already installed remain available. Backup: $BACKUP" >&2
 	fi
+	[ -z "${CONTROL_LOCK:-}" ] || rm -rf "$CONTROL_LOCK"
 	[ -z "$STAGE" ] || rm -rf "$STAGE"
 	[ -z "${INSTALL_LOCK:-}" ] || rmdir "$INSTALL_LOCK" 2>/dev/null || true
 	exit "$result"
@@ -132,7 +144,7 @@ check_packages() {
 	NEEDED=
 	# Modern tailscale packages include/provide tailscaled. Check the actual
 	# executable after installation and add the older split package if needed.
-	for package in tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter curl; do
+	for package in tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter curl openssl-util; do
 		if ! installed "$package"; then
 			available "$package" || die "Package '$package' is unavailable for this firmware/architecture"
 			NEEDED="$NEEDED $package"
@@ -167,7 +179,7 @@ install_packages() {
 		available tailscaled || die "tailscaled is missing and no split daemon package is available"
 		if [ "$PM" = apk ]; then apk add tailscaled; else opkg install tailscaled; fi
 	fi
-	for cmd in tailscale tailscaled jsonfilter timeout curl; do command -v "$cmd" >/dev/null 2>&1 || die "Installation did not provide $cmd"; done
+	for cmd in tailscale tailscaled jsonfilter timeout curl openssl; do command -v "$cmd" >/dev/null 2>&1 || die "Installation did not provide $cmd"; done
 	[ -x "$TSLAN_ROOT/etc/init.d/tailscale" ] || die "Packaged tailscale init script is missing"
 	[ -f "$TSLAN_ROOT/usr/share/libubox/jshn.sh" ] || die "jshn runtime is missing"
 	tailscale up --help 2>&1 | grep -q -- '--netfilter-mode' ||
@@ -185,47 +197,30 @@ install_payload() {
 		(umask 022; mkdir -p "$TSLAN_ROOT/$(dirname "$path")")
 		cp "$STAGE/payload/$path" "$TSLAN_ROOT/$path"
 		case "$path" in
-			etc/init.d/*|usr/libexec/*) chmod 755 "$TSLAN_ROOT/$path";;
+			etc/init.d/*|usr/libexec/*|usr/sbin/*) chmod 755 "$TSLAN_ROOT/$path";;
 			*) chmod 644 "$TSLAN_ROOT/$path";;
 		esac
 	done < "$STAGE/manifest"
 	cp "$STAGE/manifest" "$TSLAN_DATA/manifest"
 }
 
+installer_control_lock() {
+	mkdir -p "$TSLAN_RUN"
+	mkdir "$TSLAN_RUN/lock" 2>/dev/null || die 'Another Tailscale operation is running'
+	CONTROL_LOCK="$TSLAN_RUN/lock"
+	printf '%s\n' "$$" > "$CONTROL_LOCK/pid"
+}
+
 uninstall() {
-	[ -f "$TSLAN_ROOT/usr/lib/tslan/common.sh" ] || die "Integration is not installed"
 	TSLAN_LIBDIR="$STAGE/payload/usr/lib/tslan"
 	# shellcheck source=files/usr/lib/tslan/common.sh
 	. "$TSLAN_LIBDIR/common.sh"
-	[ -z "$(uci -q changes network)" ] && [ -z "$(uci -q changes firewall)" ] ||
-		die "Save/revert pending network/firewall changes first"
-	snapshot
-	tailscale down 2>/dev/null || true
-	if [ -f "$TSLAN_ROOT/etc/init.d/tslan-bypass" ]; then
-		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-bypass" stop
-		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-bypass" disable
-		"$TSLAN_ROOT/usr/libexec/tslan-passwall2" remove
-	fi
-	sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan" disable || true
-	"$TSLAN_ROOT/etc/init.d/tailscale" disable || true
-	"$TSLAN_ROOT/etc/init.d/tailscale" stop || true
-	for key in $(managed_sections); do
-		if [ "$(get "$key.tslan_managed")" = 1 ]; then uci delete "$key"; fi
-	done
-	uci commit network
-	uci commit firewall
-	rm -f "$TSLAN_ROOT/etc/sysctl.d/99-tslan.conf"
-	"$TSLAN_ROOT/etc/init.d/network" reload
-	"$TSLAN_ROOT/etc/init.d/firewall" reload
-	remove_owned_tun
-	while IFS= read -r path; do rm -f "$TSLAN_ROOT/$path"; done < "$TSLAN_DATA/manifest"
-	rm -f "$TSLAN_ROOT/etc/config/tslan"
-	"$TSLAN_ROOT/etc/init.d/rpcd" restart
-	rm -f "$TSLAN_ROOT/tmp/luci-indexcache"
-	rm -rf "$TSLAN_ROOT/tmp/luci-modulecache"
-	say "Removed LuCI integration, managed interface, zone, forwarding and startup service."
-	say "Retained installed packages, /etc/tailscale identity and root-only backups in /etc/tslan."
-	say "Tailscale is stopped. Before using it standalone run: /etc/init.d/tailscale start; tailscale set --netfilter-mode=on; tailscale up"
+	[ -f "$TSLAN_ROOT/usr/lib/tslan/common.sh" ] || die "Integration is not installed"
+	auth_require
+	installer_control_lock
+	# shellcheck source=files/usr/lib/tslan/uninstall.sh
+	. "$TSLAN_LIBDIR/uninstall.sh"
+	uninstall_integration
 }
 
 main() {
@@ -238,6 +233,22 @@ main() {
 	TSLAN_LIBDIR="$STAGE/payload/usr/lib/tslan"
 	# shellcheck source=files/usr/lib/tslan/common.sh
 	. "$TSLAN_LIBDIR/common.sh"
+	# Authenticate upgrades/checks before refreshing feeds or changing any package/config.
+	auth_require
+	installer_control_lock
+	if [ "$MODE" = install ] && [ "$NONINTERACTIVE" = 0 ] && [ -t 0 ]; then
+		if [ -z "$WEB_ARG" ]; then
+			printf '显示 LuCI 服务菜单？[y/n，回车保留现有值，新安装默认 y] '
+			IFS= read -r answer
+			case "$answer" in y|Y) WEB_ARG=on;; n|N) WEB_ARG=off;; '') :;; *) die '请输入 y 或 n';; esac
+		fi
+		if [ -z "$PASSWORD_ARG" ] && ! auth_enabled; then
+			printf '设置管理密码？[y/N] '
+			IFS= read -r answer
+			case "$answer" in y|Y) PASSWORD_ARG=on;; n|N|'') :;; *) die '请输入 y 或 n';; esac
+		fi
+	fi
+	if [ "$MODE" = install ] && [ "$PASSWORD_ARG" = on ]; then auth_read_new_password; fi
 	LAN=${LAN_ARG:-$(get tslan.settings.lan_network)}
 	LAN=${LAN:-lan}
 	[ "$(get "network.$LAN")" = interface ] || die "LAN interface '$LAN' does not exist; use --lan-network NAME"
@@ -247,6 +258,7 @@ main() {
 		die "An unrelated /etc/config/tslan exists"
 	fi
 	check_ipv6_support
+	command -v fw4 >/dev/null 2>&1 || die "LAN switches require firewall4"
 	detect_pm
 	check_packages
 	if [ "$MODE" = check ]; then
@@ -265,6 +277,13 @@ main() {
 		cp -p "$TSLAN_ROOT/etc/sysctl.d/99-tslan.conf" "$BACKUP/sysctl.conf"
 	sysctl -n net.ipv4.ip_forward > "$BACKUP/ip_forward"
 	install_packages
+	# Derive and validate the new hash before exposing/updating the integration.
+	if [ "$PASSWORD_ARG" = on ]; then
+		saved_data=$TSLAN_DATA
+		TSLAN_DATA=$STAGE
+		auth_save_password
+		TSLAN_DATA=$saved_data
+	fi
 	TRANSACTION=1
 	install_payload
 	if [ "$(get tslan.settings.managed)" != 1 ]; then
@@ -280,12 +299,18 @@ main() {
 	fi
 	uci set "tslan.settings.lan_network=$LAN"
 	[ -n "$(get tslan.settings.bypass_passwall2)" ] || uci set tslan.settings.bypass_passwall2=0
+	[ -n "$(get tslan.settings.lan_ipv4)" ] || uci set tslan.settings.lan_ipv4=1
+	[ -n "$(get tslan.settings.lan_ipv6)" ] || uci set tslan.settings.lan_ipv6=0
+	[ -n "$(get tslan.settings.web_visible)" ] || uci set tslan.settings.web_visible=1
+	case "$WEB_ARG" in on) uci set tslan.settings.web_visible=1;; off) uci set tslan.settings.web_visible=0;; esac
 	uci commit tslan
 	chmod 600 "$TSLAN_ROOT/etc/config/tslan"
 	load_settings
 	configure_network
 	# Network configuration has passed validation; remaining failures are reported,
 	# leaving the management page installed for diagnosis and login.
+	configure_web
+	case "$PASSWORD_ARG" in on) mv "$STAGE/password" "$TSLAN_DATA/password";; off) rm -f "$TSLAN_DATA/password";; esac
 	TRANSACTION=0
 	write_report
 	cp "$TSLAN_DATA/report.txt" "$TSLAN_DATA/install-report.txt"
@@ -296,6 +321,8 @@ main() {
 	"$TSLAN_ROOT/etc/init.d/rpcd" restart
 	rm -f "$TSLAN_ROOT/tmp/luci-indexcache"
 	rm -rf "$TSLAN_ROOT/tmp/luci-modulecache"
+	rm -rf "$CONTROL_LOCK"
+	CONTROL_LOCK=
 	start_result=0
 	if [ "$ENABLED" = 1 ]; then
 		# Execute in a separate process so a daemon failure cannot suppress reporting.
@@ -308,7 +335,7 @@ main() {
 	say ''
 	cat "$TSLAN_DATA/report.txt"
 	say ''
-	say "Management: LuCI -> Services -> Tailscale (refresh/re-login to LuCI if necessary)."
+	say "Management: tslan (CLI menu); LuCI -> Services -> Tailscale when Web visibility is enabled."
 	say "First use: click Login / Authorize and finish Tailscale account authorization."
 	say "Report: /etc/tslan/report.txt; install report: /etc/tslan/install-report.txt"
 	if [ "$start_result" -ne 0 ]; then

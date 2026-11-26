@@ -1,0 +1,79 @@
+#!/bin/sh
+set -eu
+umask 077
+TSLAN_ROOT=${TSLAN_ROOT:-}
+control="$TSLAN_ROOT/usr/libexec/tslan-control"
+onoff() { case "$1" in on|1) printf 1;; off|0) printf 0;; *) printf '请输入 on/off\n' >&2; return 1;; esac; }
+help() {
+	cat <<'HELP'
+用法：tslan [命令]；无参数打开管理菜单。
+ status / diagnose / report       只读状态、诊断、修改报告
+ start / stop / restart           服务启停
+ login / logout                  授权或注销
+ lan4 on|off / lan6 on|off        独立控制 LAN IPv4 / IPv6
+ bypass on|off / web on|off       PassWall2 绕过 / Web 菜单显示
+ config                          查看配置
+ config KEY VALUE                修改单项配置（布尔值使用 0/1）
+ passwd / passwd off             设置、更改、关闭管理密码
+ uninstall                       卸载管理集成（保留软件包、身份和备份）
+每次修改需要管理密码（如果已启用）。密码交互隐藏输入；自动化可从标准输入提供，禁止将密码写入参数。
+HELP
+}
+run() {
+	case "${1:-}" in
+		status|diagnose) "$control" diagnose;;
+		report) cat "$TSLAN_ROOT/etc/tslan/report.txt";;
+		start|stop|restart|login|logout) "$control" "$1";;
+		lan4|lan6|web|bypass)
+			[ "$#" = 2 ] || { help; return 1; }
+			case "$1" in lan4) key=lan_ipv4;; lan6) key=lan_ipv6;; web) key=web_visible;; bypass) key=bypass_passwall2;; esac
+			value=$(onoff "$2") || return 1
+			"$control" set "$key=$value";;
+		config)
+			if [ "$#" = 1 ]; then uci show tslan; else
+				[ "$#" = 3 ] || { help; return 1; }
+				"$control" set "$2=$3"
+			fi;;
+		passwd)
+			case "${2:-}" in '') "$control" passwd;; off) "$control" password-off;; *) help; return 1;; esac;;
+		uninstall)
+			if [ -t 0 ]; then
+				printf '卸载后 Tailscale 停止，保留身份、软件包、备份。输入 UNINSTALL 确认: '
+				IFS= read -r answer
+				[ "$answer" = UNINSTALL ] || return 0
+			fi
+			"$control" uninstall;;
+		help|--help|-h) help;;
+		*) help; return 1;;
+	esac
+}
+if [ "$#" -gt 0 ]; then run "$@"; exit; fi
+[ -t 0 ] || { help; exit 0; }
+while :; do
+	cat <<'MENU'
+
+Tailscale 管理
+ 1 运行状态      2 启动        3 停止        4 重启
+ 5 登录/授权     6 注销        7 LAN IPv4    8 LAN IPv6
+ 9 绕过PassWall2 10 Web菜单    11 修改配置   12 管理密码
+ 13 修改报告     14 一键卸载   0 退出
+MENU
+	printf '选择: '; IFS= read -r choice || exit 0
+	case "$choice" in
+		0) exit 0;; 1) set -- status;; 2) set -- start;; 3) set -- stop;; 4) set -- restart;; 5) set -- login;; 6) set -- logout;;
+		7|8|9|10)
+			printf 'on 开启 / off 关闭: '; IFS= read -r value
+			case "$choice" in 7) key=lan4;; 8) key=lan6;; 9) key=bypass;; 10) key=web;; esac
+			set -- "$key" "$value";;
+		11)
+			uci show tslan
+			printf '配置项名（例如 hostname / accept_routes）: '; IFS= read -r key
+			printf '新值: '; IFS= read -r value; set -- config "$key" "$value";;
+		12)
+			printf '1 设置/更改密码 / 2 关闭密码: '; IFS= read -r value
+			case "$value" in 1) set -- passwd;; 2) set -- passwd off;; *) continue;; esac;;
+		13) set -- report;; 14) set -- uninstall;; *) continue;;
+	esac
+	# Separate process preserves the menu after a failed operation.
+	"$TSLAN_ROOT/usr/sbin/tslan" "$@" || printf '操作未完成，请查看上方提示。\n' >&2
+done

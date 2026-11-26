@@ -5,7 +5,8 @@ TSLAN_ROOT=${TSLAN_ROOT:-}
 # shellcheck source=files/usr/lib/tslan/common.sh
 . "$TSLAN_ROOT/usr/lib/tslan/common.sh"
 ACTION=${1:-}
-case "$ACTION" in start|stop|restart|apply|login|logout|boot|diagnose) :;; *) die "Usage: tslan-control start|stop|restart|apply|login|logout|diagnose";; esac
+case "$ACTION" in start|stop|restart|apply|login|logout|boot|diagnose|set|passwd|password-off|uninstall) :;; *) die "Usage: tslan-control start|stop|restart|apply|login|logout|diagnose";; esac
+shift
 mkdir -p "$TSLAN_RUN"
 if ! mkdir "$TSLAN_RUN/lock" 2>/dev/null; then die "Another Tailscale operation is running"; fi
 # Used by restore_network() from the shared library.
@@ -15,7 +16,13 @@ NETWORK_TRANSACTION=0
 finish() {
 	result=$?
 	trap - EXIT
-	if [ "$result" -ne 0 ] && [ "$NETWORK_TRANSACTION" = 1 ]; then restore_network; fi
+	if [ "$result" -ne 0 ] && [ "$NETWORK_TRANSACTION" = 1 ]; then
+		restore_network
+		uci -q revert tslan 2>/dev/null || true
+		[ ! -f "$BACKUP/tslan" ] || cp -p "$BACKUP/tslan" "$TSLAN_ROOT/etc/config/tslan"
+		load_settings
+		configure_web
+	fi
 	printf '%s\n' "$result" > "$TSLAN_RUN/last-exit"
 	rm -rf "$TSLAN_RUN/lock"
 	exit "$result"
@@ -23,7 +30,54 @@ finish() {
 trap finish EXIT
 trap 'exit 130' INT TERM
 printf '%s\n' "$$" > "$TSLAN_RUN/lock/pid"
+# boot is a root-only procd entry point. It only reapplies saved settings.
+case "$ACTION" in boot|diagnose) :;; *)
+	if [ "${1:-}" = --ticket ]; then
+		[ "$#" -ge 2 ] || die 'Missing ticket'
+		auth_consume_ticket "$2"; shift 2
+	else auth_require; fi
+	;;
+esac
 load_settings
+case "$ACTION" in
+	passwd) auth_new_password; write_report; say '管理密码已启用'; exit 0;;
+	password-off) rm -f "$TSLAN_DATA/password"; write_report; say '管理密码已关闭'; exit 0;;
+	uninstall)
+		# shellcheck source=files/usr/lib/tslan/uninstall.sh
+		. "$TSLAN_LIBDIR/uninstall.sh"
+		uninstall_integration
+		exit 0;;
+esac
+if [ "$ACTION" != boot ] && [ "$ACTION" != diagnose ]; then
+	[ -z "$(uci -q changes tslan)" ] || die 'Save/revert pending tslan changes first'
+	check_conflicts
+	snapshot
+	NETWORK_TRANSACTION=1
+fi
+if [ "$ACTION" = set ]; then
+	WEB_ONLY=1
+	[ "$#" -gt 0 ] || die 'No settings provided'
+	for pair in "$@"; do
+		case "$pair" in *=*) key=${pair%%=*}; value=${pair#*=};; *) die 'Expected key=value';; esac
+		case "$key" in
+			enabled|lan_ipv4|lan_ipv6|web_visible|accept_dns|accept_routes|shields_up|bypass_passwall2)
+				bool "$value" || die 'Expected 0 or 1';;
+			hostname|lan_network) :;;
+			*) die "Unknown setting: $key";;
+		esac
+		if [ "$key" != web_visible ] && [ "$(get "tslan.settings.$key")" != "$value" ]; then WEB_ONLY=0; fi
+		uci set "tslan.settings.$key=$value"
+	done
+	load_settings
+	if [ "$WEB_ONLY" = 1 ]; then
+		uci commit tslan
+		configure_web
+		NETWORK_TRANSACTION=0
+		write_report
+		exit 0
+	fi
+	# Validate and configure before committing the candidate settings.
+fi
 case "$ACTION" in
 	diagnose)
 		say '=== Tailscale ==='
@@ -47,7 +101,8 @@ case "$ACTION" in
 		say '=== Managed configuration ==='
 		uci show network.tslan
 		uci show firewall.tslan
-		uci show firewall.tslan_lan
+		uci show firewall.tslan_lan 2>/dev/null || true
+		printf 'LAN IPv4=%s IPv6=%s; Web=%s; password=%s\n' "$LAN4" "$LAN6" "$WEB_VISIBLE" "$(auth_enabled && printf enabled || printf disabled)"
 		say '=== PassWall2 bypass guard ==='
 		"$TSLAN_ROOT/usr/libexec/tslan-passwall2" status
 		say '=== Note ==='
@@ -67,6 +122,7 @@ case "$ACTION" in
 		"$TSLAN_ROOT/etc/init.d/tailscale" stop
 		"$TSLAN_ROOT/etc/init.d/tailscale" disable
 		configure_bypass
+		NETWORK_TRANSACTION=0
 		write_report
 		;;
 	*)
@@ -78,21 +134,20 @@ case "$ACTION" in
 		# A single init service owns startup; the packaged daemon init stays intact.
 		"$TSLAN_ROOT/etc/init.d/tailscale" disable
 		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan" enable
+		check_conflicts
+		check_ipv6_support
+		if [ "$ACTION" != boot ]; then
+			configure_network
+			uci commit tslan
+			configure_web
+			NETWORK_TRANSACTION=0
+		fi
 		if [ "$ENABLED" = 0 ]; then
 			tailscale down 2>/dev/null || true
 			"$TSLAN_ROOT/etc/init.d/tailscale" stop
 			configure_bypass
 			write_report
 			exit 0
-		fi
-		check_conflicts
-		check_ipv6_support
-		# Avoid flash writes, configuration rebuilds and network reloads at every boot.
-		if [ "$ACTION" != boot ]; then
-			snapshot
-			NETWORK_TRANSACTION=1
-			configure_network
-			NETWORK_TRANSACTION=0
 		fi
 		start_client
 		if [ "$ACTION" = login ]; then
