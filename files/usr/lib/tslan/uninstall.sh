@@ -26,8 +26,7 @@ uninstall_integration() {
 	rm -f "$TSLAN_ROOT/etc/config/tslan" "$TSLAN_DATA/password" "$TSLAN_DATA/forward.nft"
 	rm -f "$TSLAN_ROOT/usr/share/luci/menu.d/luci-app-tslan.json"
 	"$TSLAN_ROOT/etc/init.d/rpcd" restart
-	rm -f "$TSLAN_ROOT/tmp/luci-indexcache"
-	rm -rf "$TSLAN_ROOT/tmp/luci-modulecache"
+	invalidate_luci_cache
 	say "Removed LuCI integration, managed interface, zone, forwarding and startup service."
 	say "Retained installed packages, /etc/tailscale identity and root-only backups in /etc/tslan."
 	say "Tailscale is stopped. Before using it standalone run: /etc/init.d/tailscale start; tailscale set --netfilter-mode=on; tailscale up"

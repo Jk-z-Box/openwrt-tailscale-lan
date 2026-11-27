@@ -361,6 +361,11 @@ REPORT
 	chmod 600 "$TSLAN_DATA/report.txt"
 }
 
+invalidate_luci_cache() {
+	rm -f "$TSLAN_ROOT/tmp/luci-indexcache" "$TSLAN_ROOT"/tmp/luci-indexcache.*.json
+	rm -rf "$TSLAN_ROOT/tmp/luci-modulecache"
+}
+
 configure_web() {
 	menu="$TSLAN_ROOT/usr/share/luci/menu.d/luci-app-tslan.json"
 	if [ "$WEB_VISIBLE" = 1 ]; then
@@ -369,6 +374,5 @@ configure_web() {
 	else
 		rm -f "$menu"
 	fi
-	rm -f "$TSLAN_ROOT/tmp/luci-indexcache"
-	rm -rf "$TSLAN_ROOT/tmp/luci-modulecache"
+	invalidate_luci_cache
 }

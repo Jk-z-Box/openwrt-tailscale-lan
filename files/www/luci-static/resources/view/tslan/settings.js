@@ -127,6 +127,15 @@ return view.extend({
 		return Promise.all([getStatus(), getReport()]).then(function(results) {
 			var status = document.getElementById('tslan-status');
 			if (!status) return;
+			// LuCI caches the menu in sessionStorage per browser tab. Wait for
+			// the backend commit before invalidating this tab and leaving the
+			// now-unregistered page; a rejected operation remains visible.
+			var settings = results[0].settings || {};
+			if (!results[0].busy && String(settings.web_visible) === '0') {
+				if (ui.menu && ui.menu.flushCache) ui.menu.flushCache();
+				window.location.replace(L.url('admin/status/overview'));
+				return;
+			}
 			status.replaceChildren(self.renderStatus(results[0]));
 			document.getElementById('tslan-log').textContent = results[0].log || '暂无操作日志。';
 			document.getElementById('tslan-report').textContent = results[1].report || '暂无报告。';
@@ -161,7 +170,7 @@ return view.extend({
 		option.description = '要求 LAN 已有 IPv6 地址、客户端路由经本机且系统已启用 IPv6 转发。仅在 tailscale0 出口启用 IPv6 NAT，不自动给 LAN 分配 IPv6。';
 		option = section.option(form.Flag, 'web_visible', '显示 Web 管理菜单');
 		option.default = '1'; option.rmempty = false;
-		option.description = '隐藏后可运行 tslan web on 恢复菜单；命令行和服务继续可用。';
+		option.description = '隐藏后本页面会刷新菜单并跳转；可运行 tslan web on 恢复。其他已打开的 LuCI 标签页若未更新，请退出并重新登录。';
 		option = section.option(form.Flag, 'bypass_passwall2', '绕过 PassWall2 代理（防止回环）');
 		option.default = '0'; option.rmempty = false;
 		option.description = '适用于 PassWall2 的 nftables 后端。Tailscale 外层连接和 Tailnet 流量绕过透明代理；守护进程使用隔离的上游 DNS，不修改其他应用的 FakeDNS。需可直连的上游 DNS 和公网出口，不能同时启用“使用 Tailscale DNS”。规则约每 3 秒检查一次，重载瞬间可能短暂中断。';

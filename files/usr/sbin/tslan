@@ -28,7 +28,10 @@ run() {
 			[ "$#" = 2 ] || { help; return 1; }
 			case "$1" in lan4) key=lan_ipv4;; lan6) key=lan_ipv6;; web) key=web_visible;; bypass) key=bypass_passwall2;; esac
 			value=$(onoff "$2") || return 1
-			"$control" set "$key=$value";;
+			"$control" set "$key=$value"
+			if [ "$key" = web_visible ]; then
+				printf '已修改 Web 菜单。已打开的 LuCI 浏览器标签页若未更新，请退出并重新登录 LuCI。\n'
+			fi;;
 		config)
 			if [ "$#" = 1 ]; then uci show tslan; else
 				[ "$#" = 3 ] || { help; return 1; }

@@ -102,7 +102,13 @@ class Management(unittest.TestCase):
 
     def test_visibility_upgrade_preservation_and_failure_rollback(self):
         r=self.r
+        r.put('tmp/luci-indexcache', 'old cache')
+        r.put('tmp/luci-indexcache.abcdef12.json', 'hashed cache')
+        r.put('tmp/unrelated.json', 'keep')
         self.ok(self.cli('web','off'))
+        self.assertFalse((r.root/'tmp/luci-indexcache').exists())
+        self.assertFalse((r.root/'tmp/luci-indexcache.abcdef12.json').exists())
+        self.assertTrue((r.root/'tmp/unrelated.json').exists())
         menu=r.root/'usr/share/luci/menu.d/luci-app-tslan.json'
         self.assertFalse(menu.exists())
         self.ok(self.cli('passwd',stdin='upgrade-password\n'))

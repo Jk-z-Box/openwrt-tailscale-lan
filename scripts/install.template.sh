@@ -326,8 +326,7 @@ main() {
 	"$TSLAN_ROOT/etc/init.d/uhttpd" enable
 	"$TSLAN_ROOT/etc/init.d/uhttpd" start
 	"$TSLAN_ROOT/etc/init.d/rpcd" restart
-	rm -f "$TSLAN_ROOT/tmp/luci-indexcache"
-	rm -rf "$TSLAN_ROOT/tmp/luci-modulecache"
+	invalidate_luci_cache
 	rm -rf "$CONTROL_LOCK"
 	CONTROL_LOCK=
 	start_result=0

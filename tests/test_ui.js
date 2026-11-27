@@ -39,15 +39,15 @@ const form = {
     save() { calls.push('map.save'); return Promise.resolve(); }
   }
 };
-let modal, copied, selectedField;
-const ui = { createHandlerFn: (ctx, fn) => fn.bind(ctx), addNotification: () => {}, showModal: (title, nodes) => { modal = E('div', {}, nodes); }, hideModal: () => { modal = null; } };
-const fakeWindow = { confirm: () => true, location: { reload() {} }, isSecureContext: true, navigator: { clipboard: { writeText: text => { copied = text; return Promise.resolve(); } } } };
+let modal, copied, selectedField, menuFlushes = 0, redirected;
+const ui = { menu: { flushCache: () => { menuFlushes++; } }, createHandlerFn: (ctx, fn) => fn.bind(ctx), addNotification: () => {}, showModal: (title, nodes) => { modal = E('div', {}, nodes); }, hideModal: () => { modal = null; } };
+const fakeWindow = { confirm: () => true, location: { reload() {}, replace: url => { redirected = url; } }, isSecureContext: true, navigator: { clipboard: { writeText: text => { copied = text; return Promise.resolve(); } } } };
 const uci = { save() { throw Error('Generic UCI writes are forbidden'); }, apply() { throw Error('Generic UCI writes are forbidden'); } };
-const view = new Function('view', 'form', 'rpc', 'uci', 'ui', 'poll', 'E', 'document', 'window', source)(
+const view = new Function('view', 'form', 'rpc', 'uci', 'ui', 'poll', 'E', 'document', 'window', 'L', source)(
   { extend: o => o }, form,
   { declare: spec => (...args) => { calls.push([spec.method, ...args]); return Promise.resolve(fixtures[spec.method]); } },
   uci, ui, { add: () => {} }, E, { getElementById: id => nodes[id], body: { appendChild() {} }, execCommand: command => { assert.equal(command, 'copy'); copied = selectedField.value; return true; } },
-  fakeWindow
+  fakeWindow, {url: path => '/cgi-bin/luci/' + path}
 );
 
 function walk(node, result = []) {
@@ -85,6 +85,16 @@ function walk(node, result = []) {
   await view.refresh();
   assert.equal(nodes['tslan-peers'].children.length, 1);
   assert.equal(nodes['tslan-report'].textContent, fixtures.report.report);
+  fixtures.status.settings = { web_visible: '0' };
+  fixtures.status.busy = true;
+  await view.refresh();
+  assert.equal(menuFlushes, 0);
+  assert.equal(redirected, undefined);
+  fixtures.status.busy = false;
+  await view.refresh();
+  assert.equal(menuFlushes, 1);
+  assert.equal(redirected, '/cgi-bin/luci/admin/status/overview');
+  fixtures.status.settings = { web_visible: '1' };
   await view.handleSaveApply();
   const saved = calls.indexOf('map.save');
   const applied = calls.findIndex(c => Array.isArray(c) && c[0] === 'action' && c[1] === 'set');
