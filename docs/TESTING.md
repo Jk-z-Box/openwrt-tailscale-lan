@@ -32,6 +32,10 @@
 
 在同一测试实例中启用 Xray FakeDNS 和 PassWall2 本机代理时，开启绕过后控制域名解析为 Fake IP，Tailscale 停在 NoState；关闭绕过后恢复。新增优先级靠前的 PassWall2 分流规则，匹配 `domain:tailscale.com`、`domain:tailscale.io` 并在当前 Xray 分流节点指定直连，重启 PassWall2 后控制和日志域名解析到真实地址，普通代理域名仍返回 Fake IP。开启 Tailscale 绕过后状态变为 ACTIVE / Running，本机通过 tailscale0 访问一个远端 IPv4 和 IPv6 HTTP 服务均返回 200。保留原 LAN 两项关闭设置和 FakeDNS，原 PassWall2 配置备份保存在设备本地。该规则是手动针对本台设备的 PassWall2 配置，安装脚本目前不会自动创建；未覆盖其他代理内核、分流节点或全部 DERP 域名。
 
+后续按用户要求在该设备验证独立 DNS：安装匹配固件软件源的 `unshare`，给 tailscaled 创建独立挂载命名空间并绑定仅包含原上游 DNS 的 resolv.conf；没有修改系统 resolv.conf。移除上述两个 PassWall2 域名规则后，PassWall2 配置文件与规则添加前逐字节一致，官网域名在系统 DNS 中仍返回 Fake IP；启用绕过后为 ACTIVE / Running，经 Tailscale 菜单重启后仍有独立挂载，访问对端 IPv4/IPv6 HTTP 均为 200。测试未在浏览器验证官网的最终代理出口，未验证整机重启或 DNS 上游改变时的自动更新。
+
+**仅本机试用：** 为适配现有 1.3.1 控制流程，此次设备试用修改了软件包的 `/etc/init.d/tailscale` 并新增 `/usr/libexec/tslan-dns-wrapper`；原启动脚本和 PassWall2 配置备份在设备 root 专用目录。软件包升级可能覆盖该启动脚本；项目当前安装器、升级和卸载流程尚未集成此方案，不能把本次结果当作通用发布版本。
+
 ## v1.3.1 管理功能设备测试
 
 环境：OpenWrt 23.05.5、Linux 5.15.167、Tailscale 1.58.2、firewall4/nftables，现有 LAN/WAN 仅 IPv4 与 IPv6 链路本地地址；系统原有 IPv6 forwarding=1。
