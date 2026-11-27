@@ -160,6 +160,8 @@ v1.1.1 修复了实机发现的三项安装兼容问题：BusyBox 缺少 `timeou
 
 页面显示 `ACTIVE`（四个预期链均已处理）、`PENDING`（等待 PassWall2 nftables 链）、`ERROR`（更新失败或检查进程过期）或 `OFF`。公网出口和基础 DNS 必须能独立支持 Tailscale 建立连接；此选项不改系统 DNS，也不会强行绕过其他代理插件。
 
+**使用 FakeDNS 时**，如果 Tailscale 控制域名被解析成 `198.18.x.x` 等虚拟地址，绕过代理后的连接可能无法访问这些地址。对于使用 Xray 分流节点的 PassWall2，可以在分流规则中新增高优先级规则 `domain:tailscale.com` 和 `domain:tailscale.io`，并在当前分流节点中将该规则指定为“直连”；保留全局 FakeDNS。这会影响该 PassWall2 DNS 服务中所有客户端对这些域名的解析和分流，且需要可用的直连 DNS 和公网出口。不同 DNS 后端、分流配置或 DERP 域名可能还需要额外处理。请先备份配置、检查 DNS 是否返回真实地址，并测试实际连接；项目的绕过开关不会自动创建此 PassWall2 规则。
+
 命令行等效操作：
 
 ```sh
