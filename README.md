@@ -2,24 +2,24 @@
 
 在 OpenWrt 安装 Tailscale，让**本机通过 `tailscale0` 使用 IPv4 / IPv6**，并按独立开关允许 LAN 设备访问 Tailnet。包含 LuCI **服务 → Tailscale**、`tslan` 命令行管理菜单和可选管理密码。
 
-当前版本 **1.3.1**。默认 LAN IPv4 开启、LAN IPv6 关闭；两个 LAN 开关全部关闭时，本机双栈仍然可用。IPv6 隧道可经现有 IPv4 WAN 承载。脚本保留原 LAN/WAN IPv6 设置，不配置 RA/DHCPv6；主动开启 LAN IPv6 时，仅在 `tailscale0` 出口启用 IPv6 NAT。
+当前版本 **1.3.2**。默认 LAN IPv4 开启、LAN IPv6 关闭；两个 LAN 开关全部关闭时，本机双栈仍然可用。IPv6 隧道可经现有 IPv4 WAN 承载。脚本保留原 LAN/WAN IPv6 设置，不配置 RA/DHCPv6；主动开启 LAN IPv6 时，仅在 `tailscale0` 出口启用 IPv6 NAT。
 
 已在 OpenWrt 23.05.5 测试实例验证安装、Web/命令行管理、密码保护，以及授权后的本机双栈 HTTP、LAN IPv4/IPv6 转发和四种开关组合。真实浏览器已验证自定义 Machine name 与本机/对端双栈地址复制。LAN 测试使用路由器上的隔离网络命名空间；本版整机重启及 flow offload 连接阻断仍待验证。详细范围见 [测试记录](docs/TESTING.md)。
 
-v1.3.1 修复 v1.3.0 在实际固件上 Web 操作返回 `Unsupported action` 的问题：改用 `jsonfilter` 从标准输入读取请求，兼容该固件的 JSON 工具，同时避免密码出现在进程参数中。
+v1.3.2 为 PassWall2 绕过模式提供独立的守护进程 DNS，避免系统 FakeDNS 给 Tailscale 控制连接返回虚拟 IP。v1.3.1 修复 v1.3.0 在实际固件上 Web 操作返回 `Unsupported action` 的问题。
 
 ## 一键安装
 
 在 **OpenWrt 路由器的 SSH 终端**以 root 执行：
 
 ```sh
-wget -O /tmp/tslan-install.sh https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.1/install.sh && sh /tmp/tslan-install.sh
+wget -O /tmp/tslan-install.sh https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.2/install.sh && sh /tmp/tslan-install.sh
 ```
 
 也可以使用 curl：
 
 ```sh
-curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.1/install.sh -o /tmp/tslan-install.sh && sh /tmp/tslan-install.sh
+curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.2/install.sh -o /tmp/tslan-install.sh && sh /tmp/tslan-install.sh
 ```
 
 脚本包含全部管理页和后端文件，不需要从第三方软件源安装 LuCI 插件。安装期间的 Tailscale、LuCI 及依赖来自路由器已配置的软件源；脚本不替换软件源，不跨固件安装内核模块，不关闭软件包签名校验，也不执行全系统软件包升级。
@@ -160,7 +160,7 @@ v1.1.1 修复了实机发现的三项安装兼容问题：BusyBox 缺少 `timeou
 
 页面显示 `ACTIVE`（四个预期链均已处理）、`PENDING`（等待 PassWall2 nftables 链）、`ERROR`（更新失败或检查进程过期）或 `OFF`。公网出口和基础 DNS 必须能独立支持 Tailscale 建立连接；此选项不改系统 DNS，也不会强行绕过其他代理插件。
 
-**使用 FakeDNS 时**，如果 Tailscale 控制域名被解析成 `198.18.x.x` 等虚拟地址，绕过代理后的连接可能无法访问这些地址。对于使用 Xray 分流节点的 PassWall2，可以在分流规则中新增高优先级规则 `domain:tailscale.com` 和 `domain:tailscale.io`，并在当前分流节点中将该规则指定为“直连”；保留全局 FakeDNS。这会影响该 PassWall2 DNS 服务中所有客户端对这些域名的解析和分流，且需要可用的直连 DNS 和公网出口。不同 DNS 后端、分流配置或 DERP 域名可能还需要额外处理。请先备份配置、检查 DNS 是否返回真实地址，并测试实际连接；项目的绕过开关不会自动创建此 PassWall2 规则。
+**使用 FakeDNS 时**，绕过开关会将守护进程放入单独的挂载命名空间，使用 OpenWrt 上游 DNS 文件 `/tmp/resolv.conf.d/resolv.conf.auto` 中的非回环、非 Fake IP 服务器，不修改系统 DNS 或 PassWall2 域名分流规则。上游 DNS 和公网出口必须能独立直连；上游地址变化后重启 Tailscale 以重新读取。此模式与“使用 Tailscale DNS”（accept-dns）不能同时启用。固件需提供 `unshare` 并支持挂载命名空间，且 `/etc/resolv.conf` 指向 `/tmp/resolv.conf`；其他布局将拒绝隔离启动。DNS 返回真实地址不保证其无污染或可访问，必须测试实际连接。v1.3.1 手动添加的 Tailscale 域名直连规则需自行移除；安装器不会修改 PassWall2 配置。
 
 命令行等效操作：
 
@@ -175,7 +175,7 @@ tslan bypass on
 
 | 路径 / 对象 | 改动 |
 | --- | --- |
-| 软件包 | 按需安装 `tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter curl openssl-util` 及其依赖；缺少 `timeout` 时追加 `coreutils-timeout`，旧版可能追加 `tailscaled` |
+| 软件包 | 按需安装 `tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter curl openssl-util unshare` 及其依赖；缺少 `timeout` 时追加 `coreutils-timeout`，旧版可能追加 `tailscaled` |
 | `/etc/config/network` | 托管接口 `tslan`：协议 `none`、设备 `tailscale0`、`force_link=1`；托管设备 `tslan_device` 仅对 `tailscale0` 开启 IPv6 |
 | `/etc/config/firewall` | 托管区域 `tslan`：IPv4/IPv6、输入拒绝、输出允许、区域内转发拒绝，开启 IPv4 NAT 与 MSS 修正；NAT66 跟随 LAN IPv6 开关 |
 | `/etc/config/firewall` | 托管转发 `tslan_lan` / `tslan_lan6`：按 IPv4/IPv6 开关，选定 LAN 所属区域 → `tslan`；未启用的转发不创建 |
@@ -189,6 +189,7 @@ tslan bypass on
 | Tailscale 客户端偏好 | `netfilter-mode=off`，由 OpenWrt 管理防火墙；应用页面中的 DNS、路由、Shields Up 和非空设备名称 |
 | `/etc/init.d/tslan` | 开机启动并恢复选项；保留软件包原有 `tailscale` init 文件，关闭其独立自启动，避免重复管理 |
 | `/etc/init.d/tslan-bypass`、`/usr/libexec/tslan-passwall2` | 可选 PassWall2 防回环规则及每 3 秒检查；仅开关启用且 Tailscale 启用时运行 |
+| `/etc/init.d/tslan-daemon`、`/usr/libexec/tslan-dns-wrapper` | 绕过模式下以项目独立服务启动 tailscaled，为它单独绑定上游 DNS；原软件包启动脚本不修改 |
 | `inet passwall2` 的四个代理基础链 | 开关启用时插入 `tslan-pw2-v1:*` 标识的提前返回规则，关闭时按规则句柄仅删除这些规则 |
 | `/usr/lib/tslan/`、`/usr/libexec/tslan-control`、`/usr/libexec/tslan-check` | 配置、服务控制和只读双栈检查 |
 | `/usr/libexec/rpcd/tslan`、`/usr/share/rpcd/acl.d/luci-app-tslan.json` | 专用 RPC 后端和访问权限 |

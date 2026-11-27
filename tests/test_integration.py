@@ -36,7 +36,7 @@ class Router:
             "net.ipv6.conf.eth0.disable_ipv6": "1",
             "net.ipv6.conf.br-lan.disable_ipv6": "1",
         }))
-        for command in ["uci", pm, "tailscale", "tailscaled", "jsonfilter", "sysctl", "fw4", "timeout", "ip", "sha256sum", "ubus", "ifup", "sleep", "curl"]:
+        for command in ["uci", pm, "tailscale", "tailscaled", "jsonfilter", "sysctl", "fw4", "timeout", "ip", "sha256sum", "ubus", "ifup", "sleep", "curl", "unshare"]:
             self.command(self.bin / command, command)
         for service in ["network", "firewall", "rpcd", "uhttpd", "tailscale"]:
             self.command(self.root / "etc/init.d" / service, "daemon-init" if service == "tailscale" else service)
@@ -45,6 +45,10 @@ class Router:
         self.put("etc/rc.common", """#!/bin/sh
 initscript=$1
 shift
+case "$initscript:$1" in
+  */tslan-daemon:start) "$TSLAN_ROOT/etc/init.d/tailscale" start; exit $?;;
+  */tslan-daemon:stop) exit 0;;
+esac
 case "$1" in enable|disable) exit 0;; *) exit 0;; esac
 """)
         self.env = dict(os.environ, TSLAN_ROOT=str(self.root), TSLAN_TEST_MODE="1", PATH=str(self.bin) + ":" + os.environ["PATH"])

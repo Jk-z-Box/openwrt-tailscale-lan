@@ -164,7 +164,7 @@ return view.extend({
 		option.description = '隐藏后可运行 tslan web on 恢复菜单；命令行和服务继续可用。';
 		option = section.option(form.Flag, 'bypass_passwall2', '绕过 PassWall2 代理（防止回环）');
 		option.default = '0'; option.rmempty = false;
-		option.description = '适用于 PassWall2 的 nftables 后端。让 Tailscale 外层连接、tailscale0 流量及 Tailnet IPv4/IPv6 目的地址绕过透明代理；其他流量按原策略处理。启用后每 3 秒检查规则，自动修复重载后丢失的规则，重载瞬间可能短暂中断。公网出口及基础 DNS 需能独立连通。';
+		option.description = '适用于 PassWall2 的 nftables 后端。Tailscale 外层连接和 Tailnet 流量绕过透明代理；守护进程使用隔离的上游 DNS，不修改其他应用的 FakeDNS。需可直连的上游 DNS 和公网出口，不能同时启用“使用 Tailscale DNS”。规则约每 3 秒检查一次，重载瞬间可能短暂中断。';
 		option = section.option(form.Value, 'hostname', '设备名称');
 		option.placeholder = '留空保持现有名称';
 		option.validate = function(sid, value) {
@@ -180,7 +180,7 @@ return view.extend({
 		option.description = '访问设备自身的 100.x / fd7a:115c:a1e0:: 地址无需开启。开启后接受已批准的远端子网路由，请注意与现有路由冲突；LAN 转发受各协议开关控制。';
 		option = section.option(form.Flag, 'accept_dns', '使用 Tailscale DNS');
 		option.default = '0'; option.rmempty = false;
-		option.description = '默认关闭。开启可能修改路由器 DNS；此选项不会自动为 LAN 配置 MagicDNS。';
+		option.description = '默认关闭。开启可能修改路由器 DNS；此选项不会自动为 LAN 配置 MagicDNS。与“绕过 PassWall2 代理”不能同时启用。';
 		option = section.option(form.Flag, 'shields_up', '阻止 Tailnet 主动连接本机');
 		option.default = '0'; option.rmempty = false;
 		option.description = '保留本机主动连接及其响应；LAN 转发仍受 OpenWrt 和 Tailnet 策略控制。';

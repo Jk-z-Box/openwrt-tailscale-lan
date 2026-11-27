@@ -69,6 +69,7 @@ if [ "$ACTION" = set ]; then
 		uci set "tslan.settings.$key=$value"
 	done
 	load_settings
+	check_dns_settings
 	if [ "$WEB_ONLY" = 1 ]; then
 		uci commit tslan
 		configure_web
@@ -110,7 +111,7 @@ case "$ACTION" in
 		;;
 	stop|logout)
 		if [ "$ACTION" = logout ]; then
-			"$TSLAN_ROOT/etc/init.d/tailscale" start
+			daemon_start
 			wait_daemon
 			tailscale logout
 		else
@@ -119,7 +120,7 @@ case "$ACTION" in
 		uci set tslan.settings.enabled=0
 		uci commit tslan
 		ENABLED=0
-		"$TSLAN_ROOT/etc/init.d/tailscale" stop
+		daemon_stop
 		"$TSLAN_ROOT/etc/init.d/tailscale" disable
 		configure_bypass
 		NETWORK_TRANSACTION=0
@@ -144,7 +145,7 @@ case "$ACTION" in
 		fi
 		if [ "$ENABLED" = 0 ]; then
 			tailscale down 2>/dev/null || true
-			"$TSLAN_ROOT/etc/init.d/tailscale" stop
+			daemon_stop
 			configure_bypass
 			write_report
 			exit 0

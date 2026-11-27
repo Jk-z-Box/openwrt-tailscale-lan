@@ -10,6 +10,7 @@ uninstall_integration() {
 		"$TSLAN_ROOT/usr/libexec/tslan-passwall2" remove
 	fi
 	sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan" disable || true
+	sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-daemon" stop || true
 	"$TSLAN_ROOT/etc/init.d/tailscale" disable || true
 	"$TSLAN_ROOT/etc/init.d/tailscale" stop || true
 	for key in $(managed_sections); do

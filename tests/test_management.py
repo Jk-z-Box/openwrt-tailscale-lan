@@ -23,6 +23,14 @@ class Management(unittest.TestCase):
     def clear_rate(self):
         (self.r.root / 'var/run/tslan/auth-next').unlink(missing_ok=True)
 
+    def test_bypass_rejects_accept_dns_without_changing_settings(self):
+        before = self.r.config('tslan')
+        result = subprocess.run(['/bin/sh', str(self.r.root/'usr/libexec/tslan-control'), 'set',
+            'accept_dns=1', 'bypass_passwall2=1'], env=self.r.env, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Independent daemon DNS', result.stderr)
+        self.assertEqual(self.r.config('tslan'), before)
+
     def test_password_guards_all_manual_mutations_and_uninstall(self):
         password = 'local-Test$Secret 42'
         self.ok(self.cli('passwd', stdin=password+'\n'))

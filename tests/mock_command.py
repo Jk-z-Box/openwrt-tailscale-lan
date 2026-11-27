@@ -90,7 +90,7 @@ if name == "uci":
         raise ValueError(cmd)
 elif name in ("opkg", "apk"):
     installed = read(root / "packages.json", [])
-    available = ["tailscale", "tailscaled", "ip-full", "luci", "rpcd", "uhttpd", "uhttpd-mod-ubus", "jshn", "jsonfilter", "curl", "coreutils-timeout", "openssl-util"]
+    available = ["tailscale", "tailscaled", "ip-full", "luci", "rpcd", "uhttpd", "uhttpd-mod-ubus", "jshn", "jsonfilter", "curl", "coreutils-timeout", "openssl-util", "unshare"]
     unavailable = os.environ.get("MISSING_PACKAGE")
     if unavailable in available:
         available.remove(unavailable)
@@ -213,7 +213,7 @@ elif name == "fw4":
         sys.exit(1)
 elif name == "timeout":
     sys.exit(subprocess.call(args[1:]))
-elif name in ("network", "firewall", "rpcd", "uhttpd", "tslan", "tailscaled"):
+elif name in ("network", "firewall", "rpcd", "uhttpd", "tslan", "tailscaled", "unshare"):
     pass
 elif name == "daemon-init":
     if args[0] == "start":

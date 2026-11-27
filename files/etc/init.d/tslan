@@ -17,6 +17,7 @@ start_service() {
 
 stop_service() {
 	# Do not change the enabled preference on shutdown.
+	/etc/init.d/tslan-daemon stop
 	/etc/init.d/tailscale stop
 	/etc/init.d/tslan-bypass stop
 }

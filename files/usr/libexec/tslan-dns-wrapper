@@ -1,0 +1,24 @@
+#!/bin/sh
+# Isolate the daemon's resolver only; keep the host network namespace.
+set -eu
+TSLAN_ROOT=${TSLAN_ROOT:-}
+source_file="$TSLAN_ROOT/tmp/resolv.conf.d/resolv.conf.auto"
+runtime_dir="$TSLAN_ROOT/var/run/tslan"
+mkdir -p "$runtime_dir"
+umask 077
+temp="$runtime_dir/isolated-resolv.$$"
+trap 'rm -f "$temp"' EXIT INT TERM
+[ -r "$source_file" ] || { echo 'tslan: upstream DNS file missing' >&2; exit 1; }
+awk '$1 == "nameserver" && $2 !~ /^(127\.|0\.|198\.18\.|198\.19\.|100\.)/ && $2 != "::1" && $2 !~ /^fd7a:115c:a1e0:/ && !seen[$2]++ {print "nameserver " $2}' "$source_file" > "$temp"
+[ -s "$temp" ] || { echo 'tslan: no usable independent DNS server' >&2; exit 1; }
+[ -f "$TSLAN_ROOT/tmp/resolv.conf" ] || { echo 'tslan: expected system resolver file missing' >&2; exit 1; }
+[ "$(readlink -f "$TSLAN_ROOT/etc/resolv.conf")" = "$(readlink -f "$TSLAN_ROOT/tmp/resolv.conf")" ] || {
+	echo 'tslan: unsupported system resolver layout; refusing to change system DNS' >&2; exit 1;
+}
+mv "$temp" "$runtime_dir/isolated-resolv.conf"
+trap - EXIT INT TERM
+# Arguments are expanded by the child shell inside the mount namespace.
+# shellcheck disable=SC2016
+exec unshare -m /bin/sh -c 'mount --bind "$1" "$2" || exit 1; shift 2; exec "$@"' tslan \
+	"$runtime_dir/isolated-resolv.conf" "$TSLAN_ROOT/tmp/resolv.conf" \
+	"$TSLAN_ROOT/usr/sbin/tailscaled" "$@"

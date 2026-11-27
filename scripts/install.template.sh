@@ -144,7 +144,7 @@ check_packages() {
 	NEEDED=
 	# Modern tailscale packages include/provide tailscaled. Check the actual
 	# executable after installation and add the older split package if needed.
-	for package in tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter curl openssl-util; do
+	for package in tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter curl openssl-util unshare; do
 		if ! installed "$package"; then
 			available "$package" || die "Package '$package' is unavailable for this firmware/architecture"
 			NEEDED="$NEEDED $package"
@@ -179,7 +179,7 @@ install_packages() {
 		available tailscaled || die "tailscaled is missing and no split daemon package is available"
 		if [ "$PM" = apk ]; then apk add tailscaled; else opkg install tailscaled; fi
 	fi
-	for cmd in tailscale tailscaled jsonfilter timeout curl openssl; do command -v "$cmd" >/dev/null 2>&1 || die "Installation did not provide $cmd"; done
+	for cmd in tailscale tailscaled jsonfilter timeout curl openssl unshare; do command -v "$cmd" >/dev/null 2>&1 || die "Installation did not provide $cmd"; done
 	[ -x "$TSLAN_ROOT/etc/init.d/tailscale" ] || die "Packaged tailscale init script is missing"
 	[ -f "$TSLAN_ROOT/usr/share/libubox/jshn.sh" ] || die "jshn runtime is missing"
 	tailscale up --help 2>&1 | grep -q -- '--netfilter-mode' ||
@@ -306,6 +306,7 @@ main() {
 	uci commit tslan
 	chmod 600 "$TSLAN_ROOT/etc/config/tslan"
 	load_settings
+	check_dns_settings
 	configure_network
 	# Network configuration has passed validation; remaining failures are reported,
 	# leaving the management page installed for diagnosis and login.
@@ -328,7 +329,7 @@ main() {
 		# Execute in a separate process so a daemon failure cannot suppress reporting.
 		"$TSLAN_ROOT/usr/libexec/tslan-control" boot > "$TSLAN_DATA/startup.log" 2>&1 || start_result=$?
 	else
-		"$TSLAN_ROOT/etc/init.d/tailscale" stop
+		daemon_stop
 		configure_bypass
 	fi
 	write_report

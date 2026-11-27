@@ -55,6 +55,10 @@ load_settings() {
 	case "$LAN_ZONE" in *[!a-zA-Z0-9_-]*|tslan) die "Invalid LAN firewall zone";; esac
 }
 
+check_dns_settings() {
+	[ "$BYPASS_PASSWALL2:$ACCEPT_DNS" != 1:1 ] || die 'Independent daemon DNS cannot be combined with accept-dns; disable Tailscale DNS before enabling PassWall2 bypass'
+}
+
 check_conflicts() {
 	for package in network firewall; do
 		[ -z "$(uci -q changes "$package")" ] || die "Unsaved UCI changes in $package; save/revert them first"
@@ -272,14 +276,31 @@ configure_bypass() {
 	fi
 }
 
+daemon_stop() {
+	if [ -f "$TSLAN_ROOT/etc/init.d/tslan-daemon" ]; then
+		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-daemon" stop
+	fi
+	"$TSLAN_ROOT/etc/init.d/tailscale" stop
+}
+
+daemon_start() {
+	if [ "$BYPASS_PASSWALL2" = 1 ]; then
+		command -v unshare >/dev/null 2>&1 || die 'unshare is required for independent Tailscale DNS'
+		sh "$TSLAN_ROOT/etc/rc.common" "$TSLAN_ROOT/etc/init.d/tslan-daemon" start
+	else
+		"$TSLAN_ROOT/etc/init.d/tailscale" start
+	fi
+}
+
 start_client() {
+	check_dns_settings
 	# Protect daemon transport before it attempts control/DERP/peer connections.
 	configure_bypass
 	# Restart even after an existing installation: the daemon caches IPv6
 	# capability, and netifd reload may have removed its previous addresses.
-	"$TSLAN_ROOT/etc/init.d/tailscale" stop
+	daemon_stop
 	prepare_tun
-	"$TSLAN_ROOT/etc/init.d/tailscale" start
+	daemon_start
 	wait_daemon
 	apply_preferences
 	state=$(tailscale status --json 2>/dev/null | jsonfilter -e '@.BackendState')
