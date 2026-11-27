@@ -4,7 +4,7 @@
 
 当前版本 **1.3.1**。默认 LAN IPv4 开启、LAN IPv6 关闭；两个 LAN 开关全部关闭时，本机双栈仍然可用。IPv6 隧道可经现有 IPv4 WAN 承载。脚本保留原 LAN/WAN IPv6 设置，不配置 RA/DHCPv6；主动开启 LAN IPv6 时，仅在 `tailscale0` 出口启用 IPv6 NAT。
 
-已在 OpenWrt 23.05.5 测试实例验证安装、Web/命令行管理、密码保护和防火墙规则。该实例暂未授权加入 Tailnet，**本版实际双栈及 LAN 到远端设备的连通性仍待验证**。详细范围及历史版本结果见 [测试记录](docs/TESTING.md)。
+已在 OpenWrt 23.05.5 测试实例验证安装、Web/命令行管理、密码保护，以及授权后的本机双栈 HTTP、LAN IPv4/IPv6 转发和四种开关组合。真实浏览器已验证自定义 Machine name 与本机/对端双栈地址复制。LAN 测试使用路由器上的隔离网络命名空间；本版整机重启及 flow offload 连接阻断仍待验证。详细范围见 [测试记录](docs/TESTING.md)。
 
 v1.3.1 修复 v1.3.0 在实际固件上 Web 操作返回 `Unsupported action` 的问题：改用 `jsonfilter` 从标准输入读取请求，兼容该固件的 JSON 工具，同时避免密码出现在进程参数中。
 
@@ -46,7 +46,7 @@ curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.1
 
 如果系统以 `ipv6.disable=1` 或 `net.ipv6.conf.all.disable_ipv6=1` 全局禁用了 IPv6，脚本会在安装软件和修改配置前停止。直接写全局开关会改变所有接口，因此本项目不会自动执行该操作；需先按当前固件恢复内核 IPv6 能力，并按接口保留 LAN/WAN 的限制。这个检查也会在开机启动时再次执行。
 
-此前版本已在 **OpenWrt 23.05.5 x86/64、Tailscale 1.58.2** 上验证本机双栈 HTTP、接入 LAN 桥的隔离客户端 IPv4 转发/NAT 和原有网络配置保持一致。本版的新增开关和管理密码仍需单独实机验收，不能用旧版结果代替。
+本版已在 **OpenWrt 23.05.5 x86/64、Tailscale 1.58.2** 上验证本机双栈 HTTP、接入实际 LAN 桥的隔离客户端 IPv4 转发、临时隔离 LAN 的 IPv6 转发，以及 LAN 开关和管理密码。测试没有给原 LAN/WAN 添加 IPv6 地址，也没有启用 RA/DHCPv6；这些结果不能代替其他固件与网络拓扑的验收。
 
 如果 OpenWrt 是旁路由，需要在实际主路由上添加静态路由：
 
