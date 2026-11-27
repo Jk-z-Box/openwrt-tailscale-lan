@@ -90,7 +90,7 @@ if name == "uci":
         raise ValueError(cmd)
 elif name in ("opkg", "apk"):
     installed = read(root / "packages.json", [])
-    available = ["tailscale", "tailscaled", "ip-full", "luci", "rpcd", "uhttpd", "uhttpd-mod-ubus", "jshn", "jsonfilter", "curl", "coreutils-timeout", "openssl-util", "unshare"]
+    available = ["tailscale", "tailscaled", "ip-full", "luci", "rpcd", "uhttpd", "uhttpd-mod-ubus", "jshn", "jsonfilter", "curl", "coreutils-timeout", "coreutils-stty", "openssl-util", "unshare"]
     unavailable = os.environ.get("MISSING_PACKAGE")
     if unavailable in available:
         available.remove(unavailable)
@@ -124,6 +124,10 @@ elif name in ("opkg", "apk"):
         if "coreutils-timeout" in args[1:]:
             executable = root / "bin/timeout"
             executable.write_text("#!" + sys.executable + "\nimport subprocess,sys\nsys.exit(subprocess.call(sys.argv[2:]))\n")
+            executable.chmod(0o755)
+        if "coreutils-stty" in args[1:]:
+            executable = root / "bin/stty"
+            executable.write_text('#!/bin/sh\nexit 0\n')
             executable.chmod(0o755)
     else:
         raise ValueError(args)

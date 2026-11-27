@@ -2,29 +2,31 @@
 
 在 OpenWrt 安装 Tailscale，让**本机通过 `tailscale0` 使用 IPv4 / IPv6**，并按独立开关允许 LAN 设备访问 Tailnet。包含 LuCI **服务 → Tailscale**、`tslan` 命令行管理菜单和可选管理密码。
 
-当前版本 **1.3.2**。默认 LAN IPv4 开启、LAN IPv6 关闭；两个 LAN 开关全部关闭时，本机双栈仍然可用。IPv6 隧道可经现有 IPv4 WAN 承载。脚本保留原 LAN/WAN IPv6 设置，不配置 RA/DHCPv6；主动开启 LAN IPv6 时，仅在 `tailscale0` 出口启用 IPv6 NAT。
+当前版本 **1.3.3**。默认 LAN IPv4 开启、LAN IPv6 关闭；两个 LAN 开关全部关闭时，本机双栈仍然可用。IPv6 隧道可经现有 IPv4 WAN 承载。脚本保留原 LAN/WAN IPv6 设置，不配置 RA/DHCPv6；主动开启 LAN IPv6 时，仅在 `tailscale0` 出口启用 IPv6 NAT。
 
 已在 OpenWrt 23.05.5 测试实例验证安装、Web/命令行管理、密码保护，以及授权后的本机双栈 HTTP、LAN IPv4/IPv6 转发和四种开关组合。真实浏览器已验证自定义 Machine name 与本机/对端双栈地址复制。LAN 测试使用路由器上的隔离网络命名空间；本版整机重启及 flow offload 连接阻断仍待验证。详细范围见 [测试记录](docs/TESTING.md)。
 
-v1.3.2 为 PassWall2 绕过模式提供独立的守护进程 DNS，避免系统 FakeDNS 给 Tailscale 控制连接返回虚拟 IP。v1.3.1 修复 v1.3.0 在实际固件上 Web 操作返回 `Unsupported action` 的问题。
+v1.3.3 自动检查并在必要时安装 `coreutils-stty`；终端不能安全隐藏密码时立即停止输入。v1.3.2 为 PassWall2 绕过模式提供独立的守护进程 DNS。v1.3.1 修复 v1.3.0 实机 Web 操作返回 `Unsupported action` 的问题。
 
 ## 一键安装
 
 在 **OpenWrt 路由器的 SSH 终端**以 root 执行：
 
 ```sh
-wget -O /tmp/tslan-install.sh https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.2/install.sh && sh /tmp/tslan-install.sh
+wget -O /tmp/tslan-install.sh https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.3/install.sh && sh /tmp/tslan-install.sh
 ```
 
 也可以使用 curl：
 
 ```sh
-curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.2/install.sh -o /tmp/tslan-install.sh && sh /tmp/tslan-install.sh
+curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.3/install.sh -o /tmp/tslan-install.sh && sh /tmp/tslan-install.sh
 ```
 
 脚本包含全部管理页和后端文件，不需要从第三方软件源安装 LuCI 插件。安装期间的 Tailscale、LuCI 及依赖来自路由器已配置的软件源；脚本不替换软件源，不跨固件安装内核模块，不关闭软件包签名校验，也不执行全系统软件包升级。
 
 交互安装会询问是否显示 Web 菜单、是否设置管理密码。新安装默认 Web 显示、密码关闭；升级保留已有选择，已设密码时先验证当前密码。下载后执行的形式保留终端输入，请勿改成 `curl | sh`。
+
+首次安装选择设置密码时，安装器先检查软件源并补齐 `stty`，再请求新密码。**升级时若已启用管理密码但系统缺少 `stty`**，为保持先验证密码、再改软件包的顺序，安装器会停止并提示：先通过当前固件的软件源安装 `coreutils-stty`，再重新运行升级命令。终端无法关闭回显时不会读取密码。
 
 首次安装后：
 
@@ -175,7 +177,7 @@ tslan bypass on
 
 | 路径 / 对象 | 改动 |
 | --- | --- |
-| 软件包 | 按需安装 `tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter curl openssl-util unshare` 及其依赖；缺少 `timeout` 时追加 `coreutils-timeout`，旧版可能追加 `tailscaled` |
+| 软件包 | 按需安装 `tailscale ip-full luci rpcd uhttpd uhttpd-mod-ubus jshn jsonfilter curl openssl-util unshare` 及其依赖；缺少 `timeout` 或 `stty` 时分别追加 `coreutils-timeout` 或 `coreutils-stty`，旧版可能追加 `tailscaled` |
 | `/etc/config/network` | 托管接口 `tslan`：协议 `none`、设备 `tailscale0`、`force_link=1`；托管设备 `tslan_device` 仅对 `tailscale0` 开启 IPv6 |
 | `/etc/config/firewall` | 托管区域 `tslan`：IPv4/IPv6、输入拒绝、输出允许、区域内转发拒绝，开启 IPv4 NAT 与 MSS 修正；NAT66 跟随 LAN IPv6 开关 |
 | `/etc/config/firewall` | 托管转发 `tslan_lan` / `tslan_lan6`：按 IPv4/IPv6 开关，选定 LAN 所属区域 → `tslan`；未启用的转发不创建 |

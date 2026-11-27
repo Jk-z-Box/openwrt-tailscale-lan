@@ -4,11 +4,12 @@ auth_enabled() { [ -f "$TSLAN_DATA/password" ]; }
 read_secret() (
 	# Subshell trap restores the terminal even on interruption.
 	[ -t 0 ] || { IFS= read -r secret || return 1; printf '%s' "$secret"; return; }
-	printf '%s: ' "$1" >&2
-	old_tty=$(stty -g)
-	trap 'stty "$old_tty"; printf "\n" >&2' EXIT
+	command -v stty >/dev/null 2>&1 || { printf '%s\n' 'ERROR: 缺少 stty，无法安全隐藏密码；请先安装 coreutils-stty。' >&2; return 1; }
+	old_tty=$(stty -g 2>/dev/null) || { printf '%s\n' 'ERROR: 无法读取终端状态，已停止密码输入。' >&2; return 1; }
+	trap 'stty "$old_tty" 2>/dev/null; printf "\n" >&2' EXIT
 	trap 'exit 130' INT TERM
-	stty -echo
+	stty -echo 2>/dev/null || { printf '%s\n' 'ERROR: 无法关闭终端回显，已停止密码输入。' >&2; return 1; }
+	printf '%s: ' "$1" >&2
 	IFS= read -r secret || exit 1
 	printf '%s' "$secret"
 )

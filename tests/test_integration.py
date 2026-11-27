@@ -133,6 +133,31 @@ class Integration(unittest.TestCase):
         (r.bin / "timeout").unlink()
         self.success(r.run())
         self.assertIn("coreutils-timeout", json.loads((r.root / "packages.json").read_text()))
+
+    def test_missing_stty_is_installed_from_configured_feed(self):
+        for pm in ('opkg', 'apk'):
+            with self.subTest(package_manager=pm):
+                r = self.make(pm)
+                system_bin = r.root / 'system-bin'
+                system_bin.mkdir()
+                for directory in ('/bin', '/usr/bin', '/sbin', '/usr/sbin'):
+                    for executable in pathlib.Path(directory).iterdir():
+                        link = system_bin / executable.name
+                        if executable.name != 'stty' and not link.exists():
+                            try:
+                                link.symlink_to(executable)
+                            except FileExistsError:
+                                pass
+                r.env['PATH'] = str(r.bin) + ':' + str(system_bin)
+                original_network = (r.root/'etc/config/network').read_bytes()
+                unavailable = r.run('--non-interactive', extra={'MISSING_PACKAGE': 'coreutils-stty'})
+                self.assertNotEqual(unavailable.returncode, 0)
+                self.assertIn("Package 'coreutils-stty'", unavailable.stdout)
+                self.assertEqual((r.root/'etc/config/network').read_bytes(), original_network)
+                self.assertFalse((r.root/'packages.json').exists())
+                self.success(r.run('--non-interactive'))
+                self.assertIn('coreutils-stty', json.loads((r.root/'packages.json').read_text()))
+                self.assertTrue((r.bin/'stty').exists())
         self.assertTrue((r.bin / "timeout").exists())
 
     def test_legacy_tailscale_preserves_unmanaged_preferences(self):

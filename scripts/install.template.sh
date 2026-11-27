@@ -156,6 +156,10 @@ check_packages() {
 		available coreutils-timeout || die "Package 'coreutils-timeout' is required but unavailable"
 		NEEDED="$NEEDED coreutils-timeout"
 	fi
+	if ! command -v stty >/dev/null 2>&1; then
+		available coreutils-stty || die "Package 'coreutils-stty' is required for secure terminal password input but unavailable"
+		NEEDED="$NEEDED coreutils-stty"
+	fi
 	say "Packages to install:${NEEDED:- (none)}"
 	if [ "$MODE" != check ] && [ -n "$NEEDED" ]; then
 		target="$TSLAN_ROOT/overlay"
@@ -179,7 +183,7 @@ install_packages() {
 		available tailscaled || die "tailscaled is missing and no split daemon package is available"
 		if [ "$PM" = apk ]; then apk add tailscaled; else opkg install tailscaled; fi
 	fi
-	for cmd in tailscale tailscaled jsonfilter timeout curl openssl unshare; do command -v "$cmd" >/dev/null 2>&1 || die "Installation did not provide $cmd"; done
+	for cmd in tailscale tailscaled jsonfilter timeout curl openssl unshare stty; do command -v "$cmd" >/dev/null 2>&1 || die "Installation did not provide $cmd"; done
 	[ -x "$TSLAN_ROOT/etc/init.d/tailscale" ] || die "Packaged tailscale init script is missing"
 	[ -f "$TSLAN_ROOT/usr/share/libubox/jshn.sh" ] || die "jshn runtime is missing"
 	tailscale up --help 2>&1 | grep -q -- '--netfilter-mode' ||
@@ -248,7 +252,6 @@ main() {
 			case "$answer" in y|Y) PASSWORD_ARG=on;; n|N|'') :;; *) die '请输入 y 或 n';; esac
 		fi
 	fi
-	if [ "$MODE" = install ] && [ "$PASSWORD_ARG" = on ]; then auth_read_new_password; fi
 	LAN=${LAN_ARG:-$(get tslan.settings.lan_network)}
 	LAN=${LAN:-lan}
 	[ "$(get "network.$LAN")" = interface ] || die "LAN interface '$LAN' does not exist; use --lan-network NAME"
@@ -277,6 +280,9 @@ main() {
 		cp -p "$TSLAN_ROOT/etc/sysctl.d/99-tslan.conf" "$BACKUP/sysctl.conf"
 	sysctl -n net.ipv4.ip_forward > "$BACKUP/ip_forward"
 	install_packages
+	# New passwords are read only after a missing stty has been installed.
+	# Existing passwords were authenticated before any feed/package changes.
+	if [ "$PASSWORD_ARG" = on ]; then auth_read_new_password; fi
 	# Derive and validate the new hash before exposing/updating the integration.
 	if [ "$PASSWORD_ARG" = on ]; then
 		saved_data=$TSLAN_DATA
