@@ -38,15 +38,11 @@ case "${1:-}" in
     IFS= read -r input || true
     [ "${#input}" -le 8192 ] || { error 'Request too large'; exit 0; }
     [ -n "$input" ] || input='{}'
-    # jshn -r would expose the request (including the password) in argv.
-    # Use its file reader with a private stdin instead.
-    json_load_file /proc/self/fd/0 2>/dev/null <<TSLAN_RPC_INPUT
-$input
-TSLAN_RPC_INPUT
-    json_get_var name name || name=
-    AUTH_PASSWORD=$(secret_input=; json_get_var secret_input password || true; printf '%s' "$secret_input")
-    json_get_var config config || config=
-    json_cleanup
+    # jsonfilter reads stdin. jshn -r exposes secrets in argv, while jshn -R
+    # sizes its input with fstat() and cannot read the pipe behind /proc/self/fd/0.
+    name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null) || { error 'Invalid request'; exit 0; }
+    AUTH_PASSWORD=$(printf '%s' "$input" | jsonfilter -e '@.password' 2>/dev/null || true)
+    config=$(printf '%s' "$input" | jsonfilter -e '@.config' 2>/dev/null || true)
     unset input
     case "$name" in start|stop|restart|apply|login|logout|diagnose|set) :;; *) error 'Unsupported action'; exit 0;; esac
     mkdir -p "$run"

@@ -11,5 +11,9 @@ json_add_boolean() { JSON_TEST_DATA=$(json_test add boolean "$1" "$2"); export J
 json_dump() { printf '%s\n' "$JSON_TEST_DATA"; }
 json_test() { "$TSLAN_ROOT/bin/json_test" "$@"; }
 
-json_load_file() { JSON_TEST_DATA=$(cat); JSON_TEST_PATH=; export JSON_TEST_DATA JSON_TEST_PATH; json_test valid; }
+# Real jshn -R uses fstat().st_size; a pipe/proc fd has size zero.
+json_load_file() {
+ [ -f "$1" ] && [ -s "$1" ] || { printf 'Failed to parse message data\n' >&2; return 1; }
+ JSON_TEST_DATA=$(cat "$1"); JSON_TEST_PATH=; export JSON_TEST_DATA JSON_TEST_PATH; json_test valid
+}
 json_cleanup() { unset JSON_TEST_DATA JSON_TEST_PATH; }

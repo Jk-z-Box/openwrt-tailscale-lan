@@ -2,22 +2,24 @@
 
 在 OpenWrt 安装 Tailscale，让**本机通过 `tailscale0` 使用 IPv4 / IPv6**，并按独立开关允许 LAN 设备访问 Tailnet。包含 LuCI **服务 → Tailscale**、`tslan` 命令行管理菜单和可选管理密码。
 
-当前版本 **1.3.0**。默认 LAN IPv4 开启、LAN IPv6 关闭；两个 LAN 开关全部关闭时，本机双栈仍然可用。IPv6 隧道可经现有 IPv4 WAN 承载。脚本保留原 LAN/WAN IPv6 设置，不配置 RA/DHCPv6；主动开启 LAN IPv6 时，仅在 `tailscale0` 出口启用 IPv6 NAT。
+当前版本 **1.3.1**。默认 LAN IPv4 开启、LAN IPv6 关闭；两个 LAN 开关全部关闭时，本机双栈仍然可用。IPv6 隧道可经现有 IPv4 WAN 承载。脚本保留原 LAN/WAN IPv6 设置，不配置 RA/DHCPv6；主动开启 LAN IPv6 时，仅在 `tailscale0` 出口启用 IPv6 NAT。
 
-本版新增功能经过本地自动化验证，**尚未部署到测试路由器进行实机验收**。此前 v1.1.1 / v1.2.0 实机记录见 [测试记录](docs/TESTING.md)。
+已在 OpenWrt 23.05.5 测试实例验证安装、Web/命令行管理、密码保护和防火墙规则。该实例暂未授权加入 Tailnet，**本版实际双栈及 LAN 到远端设备的连通性仍待验证**。详细范围及历史版本结果见 [测试记录](docs/TESTING.md)。
+
+v1.3.1 修复 v1.3.0 在实际固件上 Web 操作返回 `Unsupported action` 的问题：改用 `jsonfilter` 从标准输入读取请求，兼容该固件的 JSON 工具，同时避免密码出现在进程参数中。
 
 ## 一键安装
 
 在 **OpenWrt 路由器的 SSH 终端**以 root 执行：
 
 ```sh
-wget -O /tmp/tslan-install.sh https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.0/install.sh && sh /tmp/tslan-install.sh
+wget -O /tmp/tslan-install.sh https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.1/install.sh && sh /tmp/tslan-install.sh
 ```
 
 也可以使用 curl：
 
 ```sh
-curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.0/install.sh -o /tmp/tslan-install.sh && sh /tmp/tslan-install.sh
+curl -fL https://raw.githubusercontent.com/Jk-z-Box/openwrt-tailscale-lan/v1.3.1/install.sh -o /tmp/tslan-install.sh && sh /tmp/tslan-install.sh
 ```
 
 脚本包含全部管理页和后端文件，不需要从第三方软件源安装 LuCI 插件。安装期间的 Tailscale、LuCI 及依赖来自路由器已配置的软件源；脚本不替换软件源，不跨固件安装内核模块，不关闭软件包签名校验，也不执行全系统软件包升级。
